@@ -13,7 +13,7 @@ Within this repository:
  - the TCP_socket_example_code folder provides example Python code, with extensive use of Python threads, for running a TCP socket server on an 'integrating' hub device such as a Raspberry Pi or other SBC. Using the TCP socket method to collect data from local satellite sensors is particularly useful where a local WiFi network can provide wide area coverage across a local non-public intranet. Example Python code is also provided for how a satellite sensor, managed by a small low cost Raspberry Pi Zero for example, can send data to a socket server on the hub device using a 'set' format for the data and a number of 'handshake' checks between the satellite and the socket server; plus finally
  - the documentation folder contains a PDF that provides some notes on the IoT context and the development/testing of the 'C' code.
  
-It should be noted that all the 'C' code and Tiki API access 'template' files have a YYMMDD element in their file name which designates the release version, where the current versions are all 240403.
+It should be noted that all the 'C' code and Tiki API access 'template' files have a YYMMDD element in their file name which designates the release version, where the current versions are all 240807.
 
  More detail can be found on this IoT/Tiki development at <a href="https://onlinedevices.org.uk/Maker+projects+-+Internet+of+Things" target="_blank" >this link</a>
 

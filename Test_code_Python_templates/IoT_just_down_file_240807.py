@@ -1,16 +1,16 @@
 #!/usr/bin/python
-# version: 240403 ###
+# version: 240807 ###
 # python code template to be configured as required
-# file name: IoT_just_down_file_240403.py - just downloads a file from a File gallery defined by its Tiki fileId#
-# uses the control_iot_240403.c and control_iot_240403.h functions compiled as a shared library libcontrol_iot_240403.so
+# file name: IoT_just_down_file_240807.py - just downloads a file from a File gallery defined by its Tiki fileId#
+# uses the control_iot_240807.c and control_iot_240807.h functions compiled as a shared library libcontrol_iot_240807.so
 # Author : Geoff Brickell
-# Date   : 240403
+# Date   : 240807
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_down_file_240403.py
+#    sudo python3 /your_file_path/IoT_just_down_file_240807.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 240403
+#  and should be substituted for the versions being used e.g. 240807
 
 # *****************
 # *** IMPORTANT *** 

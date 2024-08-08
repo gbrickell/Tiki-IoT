@@ -1,16 +1,16 @@
 #!/usr/bin/python
-# version: 240403
+# version: 240807 ###
 # python code template to be configured as required
-# file name: IoT_just_update_tracker_item_240403.py - updates the field data of an existing tracker item
-# uses the control_iot_240403.c and control_iot_240403.h functions compiled as a shared library libcontrol_iot_240403.so
+# file name: IoT_just_download_web_page_240807.py - downloads the content of a web page and its associated wiki parameters
+# uses the control_iot_240807.c and control_iot_240807.h functions compiled as a shared library libcontrol_iot_240807.so
 # Author : Geoff Brickell
-# Date   : 240403
+# Date   : 240807
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_update_tracker_item_240403.py
+#    sudo python3 /your_file_path/IoT_just_download_web_page_240807.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 240403
+#  and should be substituted for the versions being used e.g. 240807
 
 # *****************
 # *** IMPORTANT *** 
@@ -24,6 +24,7 @@
 ####            various python functions            ####
 ####                but not all used!               ####
 ########################################################
+
 
 
 ########################################################
@@ -69,32 +70,20 @@ b_domain = domain.encode('utf-8')
 access_token = "Authorization: Bearer your_unique_security_access_token"    # Tiki API token for a specific Tiki user
 b_access_token = access_token.encode('utf-8')
 
-trackerId = "1"     # update to your tracker#
-b_trackerId = trackerId.encode('utf-8')
-
-itemIdget = "27"    # update to your tracker item#
-b_itemIdget = itemIdget.encode('utf-8')
-
-# this section of code is just to get a current time for one of the fields to be updated
-now = time.strftime("%d %b %Y %H:%M:%S")   # this creates a string in a designated format e.g. 27 Dec 2021 11:05:27
-nowepoch = round(time.time())              # BUT MUST USE the raw epoch integer to upload to a tracker to avoid time zone confusions!!
-
-# update tracker item post data
-#  this is just an example where the permanent field names (e.g. IoTtestDeviceName) are all individually given new values
-update_itemdata =  "fields[IoTtestDeviceName]=rpi5-01c&fields[IoTtestUser]=rpi5-01&fields[IoTtestTextData]=python updated text&fields[IoTtestNumericalData]=789.0456&fields[IoTtestDateTimeData]=" + str(nowepoch) + "&fields[IoTtestTextAreaData]='C' code for no apostrophies around itemId\r\nupdated text data line 1\r\nupdated text data line 2\r\n&fields[IoTtestImage]=2&fields[IoTtestDescription]=updated item data sent from the rpi05-01 device using C code called from a python program"
-b_update_itemdata = update_itemdata.encode('utf-8')
-
+page = "/your%20example%20page"  # must include the leading / and spaces 'filled' with %20 NOT + or -
+b_page = page.encode('utf-8')
 
 
 #####################################################
-# call the tracker_itemupdate C function, to update #
-# an existing tracker item passing it correctly     #
-# defined char variables using ctypes               #
+# call the webpage_download C function, passing     #
+# it correctly defined char variables using ctypes  #
 #####################################################
-pi_iot_control_YYMMDD.tracker_itemupdate.restype = ctypes.c_char_p # override the default return type (int)
-response = str( pi_iot_control_YYMMDD.tracker_itemupdate(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_trackerId), ctypes.c_char_p(b_itemIdupdate), ctypes.c_char_p(b_update_itemdata) ) )
+pi_iot_control_YYMMDD.webpage_download.restype = ctypes.c_char_p # override the default return type (int)
+response = str(pi_iot_control_YYMMDD.webpage_download(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_page), ctypes.c_char_p(b_access_token) ) )
 
-print ("\n*** tracker_itemupdate response: " )
+print ("\n*** wiki page download response: " )
 print ( response )
 print ("\n \n" )
+
+
 

@@ -1,16 +1,16 @@
 #!/usr/bin/python
-# version: 240403 ###
+# version: 240807 ###
 # python code template to be configured as required
-# file name: IoT_just_download_web_page_240403.py - downloads the content of a web page and its associated wiki parameters
-# uses the control_iot_240403.c and control_iot_240403.h functions compiled as a shared library libcontrol_iot_240403.so
+# file name: IoT_just_get_tracker_item_240807.py - downloads the field data of a specified tracker item
+# uses the control_iot_240807.c and control_iot_240807.h functions compiled as a shared library libcontrol_iot_240807.so
 # Author : Geoff Brickell
-# Date   : 240403
+# Date   : 240807
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_download_web_page_240403.py
+#    sudo python3 /your_file_path/IoT_just_get_tracker_item_240807.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 240403
+#  and should be substituted for the versions being used e.g. 240807
 
 # *****************
 # *** IMPORTANT *** 
@@ -24,7 +24,6 @@
 ####            various python functions            ####
 ####                but not all used!               ####
 ########################################################
-
 
 
 ########################################################
@@ -70,20 +69,31 @@ b_domain = domain.encode('utf-8')
 access_token = "Authorization: Bearer your_unique_security_access_token"    # Tiki API token for a specific Tiki user
 b_access_token = access_token.encode('utf-8')
 
-page = "/your%20example%20page"  # must include the leading / and spaces 'filled' with %20 NOT + or -
-b_page = page.encode('utf-8')
+trackerId = "1"     # update to your tracker#
+b_trackerId = trackerId.encode('utf-8')
+
+itemIdget = "27"    # update to your tracker item#
+b_itemIdget = itemIdget.encode('utf-8')
 
 
 #####################################################
-# call the webpage_download C function, passing     #
-# it correctly defined char variables using ctypes  #
+# call the tracker_itemget C function, to get       #
+# an existing tracker item passing it correctly     #
+# defined char variables using ctypes               #
 #####################################################
-pi_iot_control_YYMMDD.webpage_download.restype = ctypes.c_char_p # override the default return type (int)
-response = str(pi_iot_control_YYMMDD.webpage_download(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_page), ctypes.c_char_p(b_access_token) ) )
-
-print ("\n*** wiki page download response: " )
+pi_iot_control_YYMMDD.tracker_itemget.restype = ctypes.c_char_p # override the default return type (int)
+response = str( pi_iot_control_YYMMDD.tracker_itemget(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_trackerId), ctypes.c_char_p(b_itemIdget)  ) )
+print ("\n*** tracker_itemget response: " )
+response = response[2:-1]
 print ( response )
-print ("\n \n" )
+if "no response" in response or "failed" in response :
+    print("\n curl request failed or response was empty \n")
+else:
+    respdict = eval(response)     # response string should now have a dictionary-like format so create an actual dictionary!
+    print ("\n \n" )
+    for key, value in respdict.items():
+        print (key, " - ", value)
+
 
 
 

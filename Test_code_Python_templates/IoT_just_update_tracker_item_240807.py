@@ -1,16 +1,16 @@
 #!/usr/bin/python
-# version: 240403 ###
+# version: 240807
 # python code template to be configured as required
-# file name: IoT_just_update_file_240403.py - updates the details of an existing file in a File gallery
-# uses the control_iot_240403.c and control_iot_240403.h functions compiled as a shared library libcontrol_iot_240403.so
+# file name: IoT_just_update_tracker_item_240807.py - updates the field data of an existing tracker item
+# uses the control_iot_240807.c and control_iot_240807.h functions compiled as a shared library libcontrol_iot_240807.so
 # Author : Geoff Brickell
-# Date   : 240403
+# Date   : 240807
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_update_file_240403.py
+#    sudo python3 /your_file_path/IoT_just_update_tracker_item_240807.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 240403
+#  and should be substituted for the versions being used e.g. 240807
 
 # *****************
 # *** IMPORTANT *** 
@@ -69,54 +69,32 @@ b_domain = domain.encode('utf-8')
 access_token = "Authorization: Bearer your_unique_security_access_token"    # Tiki API token for a specific Tiki user
 b_access_token = access_token.encode('utf-8')
 
-fileId = "37"                          # update to the fileId# of your file that is being changed
-b_fileId = fileId.encode('utf-8')
+trackerId = "1"     # update to your tracker#
+b_trackerId = trackerId.encode('utf-8')
 
-filepath = "/your_path/filename.jpg"   # update to your path/name/type and path should include the first / character
-                                       # if no change is made to the file then this parameter should be blank/empty
-b_filepath = filepath.encode('utf-8')
+itemIdget = "27"    # update to your tracker item#
+b_itemIdget = itemIdget.encode('utf-8')
 
+# this section of code is just to get a current time for one of the fields to be updated
+now = time.strftime("%d %b %Y %H:%M:%S")   # this creates a string in a designated format e.g. 27 Dec 2021 11:05:27
+nowepoch = round(time.time())              # BUT MUST USE the raw epoch integer to upload to a tracker to avoid time zone confusions!!
 
-filename = "image_name.jpg"            # update to the name and type of your image
-                                       # if no change is made to the filename then this parameter should be blank/empty
-b_filename = filename.encode('utf-8')
-
-filetitle = "your image title for the File gallery entry"   # update to your title text
-                                       # if no change is made to the file title then this parameter should be blank/empty
-b_filetitle = filetitle.encode('utf-8')
-
-filedesc = "your image description for the File gallery entry"   # update to your description text
-                                       # if no change is made to the file description then this parameter should be blank/empty
-b_filedesc = filedesc.encode('utf-8')
+# update tracker item post data
+#  this is just an example where the permanent field names (e.g. IoTtestDeviceName) are all individually given new values
+update_itemdata =  "fields[IoTtestDeviceName]=rpi5-01c&fields[IoTtestUser]=rpi5-01&fields[IoTtestTextData]=python updated text&fields[IoTtestNumericalData]=789.0456&fields[IoTtestDateTimeData]=" + str(nowepoch) + "&fields[IoTtestTextAreaData]='C' code for no apostrophies around itemId\r\nupdated text data line 1\r\nupdated text data line 2\r\n&fields[IoTtestImage]=2&fields[IoTtestDescription]=updated item data sent from the rpi05-01 device using C code called from a python program"
+b_update_itemdata = update_itemdata.encode('utf-8')
 
 
-# blank/empty parameters that can be used if no change is to be made
-filepathblank = ""   
-b_filepathblank = filepathblank.encode('utf-8')
 
-filenameblank = ""
-b_filenameblank = filenameblank.encode('utf-8')
+#####################################################
+# call the tracker_itemupdate C function, to update #
+# an existing tracker item passing it correctly     #
+# defined char variables using ctypes               #
+#####################################################
+pi_iot_control_YYMMDD.tracker_itemupdate.restype = ctypes.c_char_p # override the default return type (int)
+response = str( pi_iot_control_YYMMDD.tracker_itemupdate(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_trackerId), ctypes.c_char_p(b_itemIdupdate), ctypes.c_char_p(b_update_itemdata) ) )
 
-filetitleblank = ""
-b_filetitleblank = filetitleblank.encode('utf-8')
+print ("\n*** tracker_itemupdate response: " )
+print ( response )
+print ("\n \n" )
 
-filedescblank = ""
-b_filedescblank = filedescblank.encode('utf-8')
-
-
-####################################################
-# call the gallery_fileupdate C function,          #
-#  to update an existing file in a File gallery    #
-#  this example makes no change to the description #
-####################################################
-print ("\n*** gallery_fileupdate: not updating description ***\n" )
-pi_iot_control_YYMMDD.gallery_fileupdate.restype = ctypes.c_char_p # override the default return type (int)
-response = str( pi_iot_control_YYMMDD.gallery_fileupdate(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_fileId), ctypes.c_char_p(b_filepath), ctypes.c_char_p(b_filename), ctypes.c_char_p(b_filetitle), ctypes.c_char_p(b_filedescblank) ) )
-
-print ("\n*** gallery_fileupdate response:\n" )
-response = response[2:-1]
-print ( response )            # response string should now have a dictionary-like format
-respdict = eval(response)     # so create an actual dictionary!
-print ("\n" )
-for key, value in respdict.items():   # print all the values separately
-    print (key, ": ", value)
