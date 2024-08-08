@@ -3,6 +3,8 @@
 // based on an original development by Geoff Brickell in August/September 2023
 // building upon many of the examples from https://curl.se/libcurl/c/libcurl.html
 // updated release 240403 for general availability
+// further updated release 240807 to tweak:
+//  - webpage_datetimecheck to better address timezone offsets for daylight savings changes through the year
 
 // *****************
 // *** IMPORTANT *** 
@@ -12,6 +14,7 @@
 // *****************
 
 #define _XOPEN_SOURCE 700
+#define _GNU_SOURCE /* for tm_gmtoff and tm_zone */
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +22,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <curl/curl.h>
-#include "control_iot_240403.h"
+#include "control_iot_240807.h"
 
 int debug;
 
@@ -450,6 +453,10 @@ char* webpage_datetimecheck(int debug, const char* domain, const char* page, cha
              strptime(found, datetime_fmt, &foundtm);    // datetime_fmt is passed as a parameter, example "%a %b %d, %Y %H:%M:%S %Z"
              time_t foundtime = 0;
              foundtime = mktime(&foundtm);
+             if (foundtm.tm_gmtoff!=0)
+             {
+                 foundtime = foundtime - foundtm.tm_gmtoff;
+             }
 	         if (debug==1)
              {
                  printf("found date/time structure details ...\n");
@@ -460,6 +467,7 @@ char* webpage_datetimecheck(int debug, const char* domain, const char* page, cha
                  printf("tm_mon:  %d\n",foundtm.tm_mon+1);        // add 1 for display since month is zero based
                  printf("tm_year:  %d\n",foundtm.tm_year+1900);   // add 1900 as year is the number of years since 1900
                  printf("tm_wday:  %d\n",foundtm.tm_wday);        // days since Sunday - [0-6]
+                 printf("tm_gmtoff:  %d\n",foundtm.tm_gmtoff);    // %Z offset in seconds
                  printf ("found date/time as epoch integer: %ld\n", foundtime);
              }
              // now compare found vs ref times
