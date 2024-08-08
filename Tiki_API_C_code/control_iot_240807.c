@@ -26,7 +26,7 @@
 
 int debug;
 
-char swver[8] = "240403";
+char swver[8] = "240807";
 
 struct MemoryStruct {
   char *memory;
