@@ -1,5 +1,5 @@
-// standalone 'C' program template (IoT_Ctest_template_240403.c) to just demonstrate/test 
-// some of Tiki access functions provided in control_iot_240403.c 
+// standalone 'C' program template (IoT_Ctest_template_240807.c) to just demonstrate/test 
+// some of Tiki access functions provided in control_iot_240807.c 
 
 // this template provides example code, but needs to be configured for the specific use
 
@@ -7,18 +7,19 @@
 // using many of the examples from https://curl.se/libcurl/c/libcurl.html
 
 // compiled using gcc on a local 'integrating' hub device using the command:
-// gcc -o /your_path_to_compiled_result/Ctest_IoT_240403.exe /your_path_to_this_file/IoT_Ctest_template_240403.c /your_path_to/control_iot_240403.c -I/usr/local/include -L/usr/local/lib -lcurl
+// gcc -o /your_path_to_compiled_result/Ctest_IoT_240807.exe /your_path_to_this_file/IoT_Ctest_template_240807.c /your_path_to/control_iot_240807.c -I/usr/local/include -L/usr/local/lib -lcurl
 
-// run using the command: /your_path_to/Ctest_IoT_240403.exe
+// run using the command: /your_path_to/Ctest_IoT_240807.exe
 
 #define _XOPEN_SOURCE 700
+#define _GNU_SOURCE /* for tm_gmtoff and tm_zone */
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>   // allows the use of bool, true and false which are otherwise not available in C
 #include <string.h>
 #include <curl/curl.h>
-#include "control_iot_240403.h"
+#include "control_iot_240807.h"
 
 // declaration of functions being used to avoid gcc warnings
 long int findSize(const char* file_name);
