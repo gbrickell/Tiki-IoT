@@ -22,11 +22,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <curl/curl.h>
-#include "control_iot_240807.h"
+#include "control_iot_241230.h"
 
 int debug;
 
-char swver[8] = "240807";
+char swver[8] = "241230";
 
 struct MemoryStruct {
   char *memory;
@@ -467,7 +467,7 @@ char* webpage_datetimecheck(int debug, const char* domain, const char* page, cha
                  printf("tm_mon:  %d\n",foundtm.tm_mon+1);        // add 1 for display since month is zero based
                  printf("tm_year:  %d\n",foundtm.tm_year+1900);   // add 1900 as year is the number of years since 1900
                  printf("tm_wday:  %d\n",foundtm.tm_wday);        // days since Sunday - [0-6]
-                 printf("tm_gmtoff:  %d\n",foundtm.tm_gmtoff);    // %Z offset in seconds
+                 printf("tm_gmtoff:  %ld\n",foundtm.tm_gmtoff);    // %Z offset in seconds
                  printf ("found date/time as epoch integer: %ld\n", foundtime);
              }
              // now compare found vs ref times
@@ -757,14 +757,14 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
          // first of all check that the update went OK by looking for "Success" in memchunk
          response = strstr(memchunk.memory, "Success");        // response should now be the whole string from "Success" onwards
 	     if (debug==1) {
-             printf ("length of Success response string is: %d\n", strlen(response) );
+             printf ("length of Success response string is: %ld\n", strlen(response) );
          }
 
          if ( response != NULL )  {  // "Success" string found!
              // now look for the start of the 'mes' text
              response = strstr(memchunk.memory, "mes");        // response should now be the whole string from "mes" onwards
 	         if (debug==1) {
-                 printf ("length of mes response string is: %d\n", strlen(response) );
+                 printf ("length of mes response string is: %ld\n", strlen(response) );
              }
 
              if ( response != NULL )  {  // "mes" string found!
@@ -773,7 +773,7 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
 	             if (debug==1)
                  {
                      printf ("1st cropped found text is: %s\n", response);
-                     printf ("length of new mes response string is: %d\n", strlen(response) );
+                     printf ("length of new mes response string is: %ld\n", strlen(response) );
                  }
                  // now strip away everything from the first ] character found
                  char *ptr;
@@ -784,7 +784,7 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
 	             if (debug==1)
                  {
                      printf ("2nd cropped found text is: %s\n", response);
-                     printf ("length of next new mes response string is: %d\n", strlen(response) );
+                     printf ("length of next new mes response string is: %ld\n", strlen(response) );
                  }
                  // now remove the final " character to leave just the message text 
                  removeString(response, strlen(response)-1, 1);    
@@ -792,7 +792,7 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
 	             if (debug==1)
                  {
                      printf ("3rd cropped found text is: %s\n", response);
-                     printf ("length of final new mes response string is: %d\n", strlen(response) );
+                     printf ("length of final new mes response string is: %ld\n", strlen(response) );
                      printf ("returnstr set to         : %s\n", returnstr);
                  }
 
@@ -929,14 +929,14 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
          // first of all check that the update went OK by looking for "Success" in memchunk
          response = strstr(memchunk.memory, "Success");        // response should now be the whole string from "Success" onwards
 	     if (debug==1) {
-             printf ("length of Success response string is: %d\n", strlen(response) );
+             printf ("length of Success response string is: %ld\n", strlen(response) );
          }
 
          if ( response != NULL )  {  // "Success" string found!
              // now look for the start of the 'fields' text
              response = strstr(memchunk.memory, "fields");        // response should now be the whole string from "fields" onwards
 	         if (debug==1) {
-                 printf ("Success! Length of fields response string is now: %d\n", strlen(response) );
+                 printf ("Success! Length of fields response string is now: %ld\n", strlen(response) );
              }
 
              if ( response != NULL )  {  // "fields" string found!
@@ -945,7 +945,7 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
 	             if (debug==1)
                  {
                      printf ("1st cropped found text is: %s\n", response);
-                     printf ("length of new fields response string is: %d\n", strlen(response) );
+                     printf ("length of new fields response string is: %ld\n", strlen(response) );
                  }
                  // now strip away everything at the end from 'nextTicket' onwards
                  char *ptr;
@@ -956,7 +956,7 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
 	             if (debug==1)
                  {
                      printf ("2nd cropped fields text is: %s\n", response);
-                     printf ("length of next new fields response string is: %d\n", strlen(response) );
+                     printf ("length of next new fields response string is: %ld\n", strlen(response) );
                  }
                  // now remove the final " character to leave just the fields text 
                  removeString(response, strlen(response)-2,2);    
@@ -964,7 +964,7 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
 	             if (debug==1)
                  {
                      printf ("3rd cropped found text is: %s\n", response);
-                     printf ("length of final new fields response string is: %d\n", strlen(response) );
+                     printf ("length of final new fields response string is: %ld\n", strlen(response) );
                      printf ("returnstr set to         : %s\n", returnstr);
                  }
 
@@ -1169,7 +1169,7 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
         }
 
 	    if (debug==1) { 
-            printf("header file size: %d\n", headersize);
+            printf("header file size: %ld\n", headersize);
         }
 
         long int bodysize = 0;
@@ -1185,7 +1185,7 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
         }
 
 	    if (debug==1) { 
-            printf("body file size: %d\n", bodysize);
+            printf("body file size: %ld\n", bodysize);
         }
 
         // now check if the download file should be renamed
@@ -1431,14 +1431,14 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
 
          if ( response != NULL )  {  // "fileId" string found!
 	         if (debug==1) {
-                 printf ("fileId found! Length of response string is now: %d\n", strlen(response) );
+                 printf ("fileId found! Length of response string is now: %ld\n", strlen(response) );
              }
 
              removeString(response, 0, 9);     // strip away the first 9 front end characters for just the fileId number and everything after
 	         if (debug==1)
              {
                  printf ("1st cropped found text is: %s\n", response);
-                 printf ("length of new response string is: %d\n", strlen(response) );
+                 printf ("length of new response string is: %ld\n", strlen(response) );
              }
 
              // now strip away everything at the end from 'galleryId' onwards
@@ -1450,7 +1450,7 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
 	         if (debug==1)
              {
                  printf ("2nd cropped response text is: %s\n", response);
-                 printf ("length of next new response string is: %d\n", strlen(response) );
+                 printf ("length of next new response string is: %ld\n", strlen(response) );
              }
 
              // now remove the final "," characters to leave just the fileId number 
@@ -1459,7 +1459,7 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
 	         if (debug==1)
              {
                  printf ("3rd cropped response is: %s\n", response);
-                 printf ("length of final response string is: %d\n", strlen(response) );
+                 printf ("length of final response string is: %ld\n", strlen(response) );
                  printf ("returnstr set to         : %s\n", returnstr);
              }
 

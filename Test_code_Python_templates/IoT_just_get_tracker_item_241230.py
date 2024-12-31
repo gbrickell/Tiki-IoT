@@ -1,16 +1,16 @@
 #!/usr/bin/python
-# version: 240807 ###
+# version: 241230 ###
 # python code template to be configured as required
-# file name: IoT_just_get_tracker_item_240807.py - downloads the field data of a specified tracker item
-# uses the control_iot_240807.c and control_iot_240807.h functions compiled as a shared library libcontrol_iot_240807.so
+# file name: IoT_just_get_tracker_item_241230.py - downloads the field data of a specified tracker item
+# uses the control_iot_241230.c and control_iot_241230.h functions compiled as a shared library libcontrol_iot_241230.so
 # Author : Geoff Brickell
-# Date   : 240807
+# Date   : 241230
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_get_tracker_item_240807.py
+#    sudo python3 /your_file_path/IoT_just_get_tracker_item_241230.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 240807
+#  and should be substituted for the versions being used e.g. 241230
 
 # *****************
 # *** IMPORTANT *** 
@@ -40,7 +40,7 @@ debug = 1   # set to 1 to see lots of additional output!!
 # common that can be used in different IoT contexts 
 #  The .so library is created with the following gcc compiler command (where folder paths will have to be adjusted!):
 #  gcc -shared -o /your_file_path/libcontrol_iot_YYMMDD.so -fPIC /your_file_path/control_iot_YYMMDD.c -I/usr/local/include -L/usr/local/lib -lcurl
-# The following 'install' may be needed on a RPi:
+# The following 'install' may be needed on a RPi or NVIDIA Jetson Nano/Orin:
 # sudo apt install curl                       (this is usually already installed)
 # sudo apt-get install libcurl4-openssl-dev   (this is more likely to be needed to avoid a gcc fatal error from curl/curl.h not being found)
 
