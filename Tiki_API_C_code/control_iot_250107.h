@@ -8,7 +8,7 @@ void connect_iot();
 
 char* webpage_download(int debug, const char* domain, const char* page, char* access_token);
 
-_Bool webpage_check(int debug, const char* domain, const char* page, char* access_token, const char* check_text);
+char* webpage_check(int debug, const char* domain, const char* page, char* access_token, const char* check_text);
 
 char* webpage_datetimecheck(int debug, const char* domain, const char* page, char* access_token, const char* infront_text, int datelen, const char* ref_datetime, const char* datetime_fmt);
 

@@ -5,6 +5,7 @@
 // updated release 240403 for general availability
 // further updated release 240807 to tweak:
 //  - webpage_datetimecheck to better address timezone offsets for daylight savings changes through the year
+// further updated release 250107 to add more error checking
 
 // *****************
 // *** IMPORTANT *** 
@@ -22,11 +23,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <curl/curl.h>
-#include "control_iot_241230.h"
+#include "control_iot_250107.h"
 
 int debug;
 
-char swver[8] = "241230";
+char swver[8] = "250107";
 
 struct MemoryStruct {
   char *memory;
@@ -181,13 +182,33 @@ char* webpage_download(int debug, const char* domain, const char* page, char* ac
              printf("%lu bytes retrieved\n", (unsigned long)memchunk.size);
              printf("the full wiki page text is: %s\n", memchunk.memory);
         }
-        returnstr = copyString(memchunk.memory);
+         // first use strstr to check if 'not found (404)' is 'in' memchunk.memory
+         char not_found[16] = "not found (404)";
+         char *nopage;
+         nopage = strstr(memchunk.memory, not_found);  // nopage is now the whole string from 'not found' onwards if found
+         if ( nopage != NULL )  {  // 'not found' string must have been found!
+		     returnstr = "page not found";
+	         if (debug==1)
+             {
+                 printf ("\npage not found in Tiki");
+             }
+
+         } else {
+             returnstr = copyString(memchunk.memory);
+         }
     }
+
+
     /* cleanup curl stuff */
     curl_easy_cleanup(curl_handle);
     free(memchunk.memory);
     /* we are done with libcurl, so clean it up */
     curl_global_cleanup();
+    if (debug==1)
+    {
+        printf ("\ncurl_handle cleaned up and memchunk.memory freed\n");
+        printf ("curl_global cleaned up and returning: %s\n", returnstr);
+    }
 
 	return returnstr;
 }
@@ -195,19 +216,19 @@ char* webpage_download(int debug, const char* domain, const char* page, char* ac
 
 // ***************************************************************
 // web page simple/general content check function: looks for 
-//  specific content on a page and returns 0 if false or 1 if true
+//  specific content on a page and returns a specific result text
 // curl code based upon https://curl.se/libcurl/c/getinmemory.html
 // ***************************************************************
-_Bool webpage_check(int debug, const char* domain, const char* page, char* access_token, const char* check_text)
+char* webpage_check(int debug, const char* domain, const char* page, char* access_token, const char* check_text)
 {
     // debug: if set to 1 this produces (lots!!) of additional output
     // domain: string used for the main URL text that must include https:// but no trailing /
     // page: text for the specific web page part of the URL that must include the leading / and spaces 'filled' with %20 NOT + or -
     // access_token: the API access token that enables specific permissions for the API usage
     // check_text: text string that is 'looked for' on the web page content
-    // check_result is returned as either TRUE or FALSE
+    // check_result is returned as a message string
 
-    bool check_result = false;
+    char *check_result = "";
 	if (debug==1)
     {
        printf ("\n *** debug from webpage_check ...\n");
@@ -262,56 +283,70 @@ _Bool webpage_check(int debug, const char* domain, const char* page, char* acces
     /* check for errors */
     if(res != CURLE_OK) {
         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        // check_result is already set to false - so no need to update it
+        check_result = "curl request failed";
     } else if (memchunk.size == 0) {
         printf("the curl request may have been processed BUT there was no response from the server API\n");
-        check_result = false;
+        check_result = "no response from server";
     } else {
         /*
         * Now, our memchunk.memory points to a memory block that is memchunk.size
         * bytes big and contains the web page content.
         *
-        * content check code below does a string check against the 'check_text' string
+        * content check code below first does a check on the page being found 
+        *  and then it does a string check against the 'check_text' string
         */
 	    if (debug==1)
         {
              printf("%lu bytes retrieved\n", (unsigned long)memchunk.size);
              //printf("the full wiki page text is: %s\n", memchunk.memory);
         }
-         char *found;
-         // use strstr to check if the check_text is 'in' memchunk.memory
-         //  - returns pointer to start if found, or a null pointer if not
-         found = strstr(memchunk.memory, check_text);  // found is now the whole string from check_text onwards if found
-         // now remove all the characters after the check_text characters
-         removeString(found, strlen(check_text), strlen(memchunk.memory));
-         if ( found != NULL )  {  // check_text string must have been found!
-		     check_result = true;
+         // use strstr to check if 'not found (404)' is 'in' memchunk.memory
+         char not_found[16] = "not found (404)";
+         char *nopage;
+         nopage = strstr(memchunk.memory, not_found);  // nopage is now the whole string from 'not found' onwards if found
+         if ( nopage != NULL )  {  // 'not found' string must have been found!
+		     check_result = "page not found";
 	         if (debug==1)
              {
-                 printf ("\ntext found - cropped found text is: %s\n", found);
+                 printf ("\npage not found in Tiki");
              }
 
          } else {
-	         if (debug==1)
-             {
-                 printf ("\ntext not found\n");
-             }
-             check_result = false;
+             // now use strstr to check if the check_text is 'in' memchunk.memory
+             //  but only if the page was found
+             char *found;
+             //  - returns pointer to start if found, or a null pointer if not
+             found = strstr(memchunk.memory, check_text);  // found is now the whole string from check_text onwards if found
+             // check 'found' and return an error message if the check_text is not found
+             if ( found != NULL )  {  // check_text string must have been found!
+                 check_result = "check_text found";
+                 // now remove all the characters after the check_text characters
+                 removeString(found, strlen(check_text), strlen(memchunk.memory));
+	             if (debug==1)
+                 {
+                     printf ("\ntext found - cropped found text is: %s\n", found);
+                 }
+
+             } else {
+	             if (debug==1) {
+                     printf ("\n check_text not found\n");
+                 }
+                 check_result = "check_text not found";
+			 }	 
          }
     }
     /* cleanup curl stuff */
     curl_easy_cleanup(curl_handle);
     free(memchunk.memory);
+    /* we are done with libcurl, so clean it up */
+    curl_global_cleanup();
+
     if (debug==1)
     {
         printf ("\ncurl_handle cleaned up and memchunk.memory freed\n");
+        printf ("curl_global cleaned up and returning check_result: %s\n", check_result);
     }
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
-    if (debug==1)
-    {
-        printf ("curl_global cleaned up and returning check_result: %s\n", check_result?"true":"false");
-    }
+
 	return check_result;
 }
 
@@ -419,76 +454,89 @@ char* webpage_datetimecheck(int debug, const char* domain, const char* page, cha
          * Now, our memchunk.memory points to a memory block that is memchunk.size
          * bytes big and contains the web page content.
          *
-         * the date check code below gets the date from the web page content and checks it against ref_datetime
+         * content check code below first does a check on the page being found 
+         *  and then it gets the date from the web page content and checks it against ref_datetime
          */
 	     if (debug==1)
          { 
              printf("%lu bytes retrieved\n", (unsigned long)memchunk.size);
-             printf("the full wiki page text is: %s\n", memchunk.memory);
-         }
-         char *found;
-         found = strstr(memchunk.memory, infront_text);        // found should now be the whole string from infront_text onwards
-	     if (debug==1)
-         { 
-             printf("the full text from infront_text onwards is: %s\n", found);
+             //printf("the full wiki page text is: %s\n", memchunk.memory);
          }
 
-         if ( found != NULL )  {  // infront_text string found!
-             int offset = datelen + strlen(infront_text);
-             removeString(found, offset, strlen(memchunk.memory)); // strip away all the back end text after the datelen + infront_text characters
+         // use strstr to check if 'not found (404)' is 'in' memchunk.memory
+         char not_found[16] = "not found (404)";
+         char *nopage;
+         nopage = strstr(memchunk.memory, not_found);  // nopage is now the whole string from 'not found' onwards if found
+         if ( nopage != NULL )  {  // 'not found' string must have been found!
+		     check_result_text = "page not found";
 	         if (debug==1)
              {
-                 printf ("1st cropped found text is: %s\n", found);
+                 printf ("\npage not found in Tiki");
              }
-             int infront = strlen(infront_text) + 1;    // add 1 to take away an assumed space in front of the datetime text
-             removeString(found, 0, infront);   // strip away the first infront_text + 1 characters for just the date/time string
-	         if (debug==1)
-             {
-                 printf ("2nd cropped found text is: %s\n", found);
-             }
-             // now convert to epoch time and compare
 
-             struct tm foundtm ;
-             memset(&foundtm, 0, sizeof(struct tm));     // make sure the struct is initialised otherwise you get crazy numbers
-             strptime(found, datetime_fmt, &foundtm);    // datetime_fmt is passed as a parameter, example "%a %b %d, %Y %H:%M:%S %Z"
-             time_t foundtime = 0;
-             foundtime = mktime(&foundtm);
-             if (foundtm.tm_gmtoff!=0)
-             {
-                 foundtime = foundtime - foundtm.tm_gmtoff;
-             }
-	         if (debug==1)
-             {
-                 printf("found date/time structure details ...\n");
-                 printf("tm_hour:  %d\n",foundtm.tm_hour);
-                 printf("tm_min:  %d\n",foundtm.tm_min);
-                 printf("tm_sec:  %d\n",foundtm.tm_sec);
-                 printf("tm_mday:  %d\n",foundtm.tm_mday);
-                 printf("tm_mon:  %d\n",foundtm.tm_mon+1);        // add 1 for display since month is zero based
-                 printf("tm_year:  %d\n",foundtm.tm_year+1900);   // add 1900 as year is the number of years since 1900
-                 printf("tm_wday:  %d\n",foundtm.tm_wday);        // days since Sunday - [0-6]
-                 printf("tm_gmtoff:  %ld\n",foundtm.tm_gmtoff);    // %Z offset in seconds
-                 printf ("found date/time as epoch integer: %ld\n", foundtime);
-             }
-             // now compare found vs ref times
-             if (foundtime > reftime) {
-                 check_result_text = copyString("true");
-                 if (debug==1) {
-                    printf("found time is newer, returning: %s\n", check_result_text);
+         } else {
+             // now use strstr to check if the infront_text is 'in' memchunk.memory
+             //  but only if the page was found
+
+             char *found;
+             found = strstr(memchunk.memory, infront_text);        // found should now be the whole string from infront_text onwards
+             if ( found != NULL )  {  // infront_text string found!
+                 int offset = datelen + strlen(infront_text);
+                 removeString(found, offset, strlen(memchunk.memory)); // strip away all the back end text after the datelen + infront_text characters
+	             if (debug==1)
+                 {
+                     printf ("1st cropped found text is: %s\n", found);
+                 }
+                 int infront = strlen(infront_text) + 1;    // add 1 to take away an assumed space in front of the datetime text
+                 removeString(found, 0, infront);   // strip away the first infront_text + 1 characters for just the date/time string
+	             if (debug==1)
+                 {
+                     printf ("2nd cropped found text is: %s\n", found);
+                 }
+                 // now convert to epoch time and compare
+
+                 struct tm foundtm ;
+                 memset(&foundtm, 0, sizeof(struct tm));     // make sure the struct is initialised otherwise you get crazy numbers
+                 strptime(found, datetime_fmt, &foundtm);    // datetime_fmt is passed as a parameter, example "%a %b %d, %Y %H:%M:%S %Z"
+                 time_t foundtime = 0;
+                 foundtime = mktime(&foundtm);
+                 if (foundtm.tm_gmtoff!=0)
+                 {
+                     foundtime = foundtime - foundtm.tm_gmtoff;
+                 }
+	             if (debug==1)
+                 {
+                     printf("found date/time structure details ...\n");
+                     printf("tm_hour:  %d\n",foundtm.tm_hour);
+                     printf("tm_min:  %d\n",foundtm.tm_min);
+                     printf("tm_sec:  %d\n",foundtm.tm_sec);
+                     printf("tm_mday:  %d\n",foundtm.tm_mday);
+                     printf("tm_mon:  %d\n",foundtm.tm_mon+1);        // add 1 for display since month is zero based
+                     printf("tm_year:  %d\n",foundtm.tm_year+1900);   // add 1900 as year is the number of years since 1900
+                     printf("tm_wday:  %d\n",foundtm.tm_wday);        // days since Sunday - [0-6]
+                     printf("tm_gmtoff:  %ld\n",foundtm.tm_gmtoff);    // %Z offset in seconds
+                     printf ("found date/time as epoch integer: %ld\n", foundtime);
+                 }
+                 // now compare found vs ref times
+                 if (foundtime > reftime) {
+                     check_result_text = copyString("true: found time is after ref time");
+                     if (debug==1) {
+                        printf("found time is newer, returning: %s\n", check_result_text);
+                     }
+                 } else {
+                     check_result_text = copyString("false: found time is before ref time");
+	                 if (debug==1) {
+                        printf("found time is older, returning: %s\n", check_result_text);
+                     }
                  }
              } else {
-                 check_result_text = copyString("false");
-	             if (debug==1) {
-                    printf("found time is older, returning: %s\n", check_result_text);
+                 check_result_text = copyString("infront_text not found");
+	             if (debug==1)
+                 {
+                     printf ("\n*** infront_text not found!! ***, returning: %s\n", check_result_text);
+                     printf ("\n\n");
+                     //printf ("full original web page text is: %s\n", memchunk.memory);
                  }
-             }
-         } else {
-             check_result_text = copyString("not found");
-	         if (debug==1)
-             {
-                 printf ("\n*** infront_text not found!! ***, returning: %s\n", check_result_text);
-                 printf ("\n\n");
-                 printf ("full original web page text is: %s\n", memchunk.memory);
              }
          }
     }
@@ -756,11 +804,15 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
 
          // first of all check that the update went OK by looking for "Success" in memchunk
          response = strstr(memchunk.memory, "Success");        // response should now be the whole string from "Success" onwards
-	     if (debug==1) {
-             printf ("length of Success response string is: %ld\n", strlen(response) );
+         if (debug==1) {
+             printf ("check made for the Success text string" );
          }
 
          if ( response != NULL )  {  // "Success" string found!
+             if (debug==1) {
+                 printf ("length of Success response string is: %ld\n", strlen(response) );
+             }
+
              // now look for the start of the 'mes' text
              response = strstr(memchunk.memory, "mes");        // response should now be the whole string from "mes" onwards
 	         if (debug==1) {
@@ -821,22 +873,18 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
 
     /* cleanup curl stuff */
     curl_easy_cleanup(curl_handle);
+    free(memchunk.memory);
+    /* we are done with libcurl, so clean it up */
+    curl_global_cleanup();
+
 	if (debug==1)
     {
         printf ("curl_handle cleaned up\n");
-    }
-    free(memchunk.memory);
-	if (debug==1)
-    {
         printf ("memchunk.memory freed\n");
-    }
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
-	if (debug==1)
-    {
         printf ("curl_global cleaned up, and ...\n");
         printf ("return string is: %s\n", returnstr);
     }
+
 	return returnstr;
 }	
 
@@ -928,11 +976,12 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
 
          // first of all check that the update went OK by looking for "Success" in memchunk
          response = strstr(memchunk.memory, "Success");        // response should now be the whole string from "Success" onwards
-	     if (debug==1) {
-             printf ("length of Success response string is: %ld\n", strlen(response) );
-         }
 
          if ( response != NULL )  {  // "Success" string found!
+
+	         if (debug==1) {
+                 printf ("length of Success response string is: %ld\n", strlen(response) );
+             }
              // now look for the start of the 'fields' text
              response = strstr(memchunk.memory, "fields");        // response should now be the whole string from "fields" onwards
 	         if (debug==1) {
@@ -1182,6 +1231,15 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
             curl_easy_cleanup(curl_handle);
             curl_global_cleanup();
             return returnstr;
+        } else if (bodysize < 80) {
+            returnstr = copyString("body file size is unusually small - fileId may not have been found");
+	        if (debug==1) { 
+                printf("body file size: %ld\n", bodysize);
+                printf("body file size is unusually small which suggests the fileId has not been found - aborting operation\n");
+            }
+            curl_easy_cleanup(curl_handle);
+            curl_global_cleanup();
+            return returnstr;
         }
 
 	    if (debug==1) { 
@@ -1218,7 +1276,30 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
                     {
                         printf ("line read from file is: %s\n", resp);
                     }                            
-                    respline = copyString(resp);
+                    // first check that a 'good' download has happened
+                    respline = copyString(resp);                    
+                    respline = strstr(respline, "HTTP/2 404"); 
+                    if ( respline != NULL )  {  // not NULL so "HTTP/2 404" found in the line so an error has occured!  
+	                    if (debug==1)
+                        {
+                            printf ("HTTP/2 404 - found in the headerfile, so an error has occurred\n");
+                        }
+                        /* cleanup curl stuff */
+                        curl_easy_cleanup(curl_handle);
+                        /* we are done with libcurl, so clean it up */
+                        curl_global_cleanup();
+                        returnstr = copyString("HTTP/2 404 - found in the headerfile so the fileId was probably not found");
+                        if (debug==1)
+                        {
+                            printf ("curl_handle cleaned up\n");
+                            printf ("curl_global cleaned up, and ...\n");
+                            printf ("return string is: %s\n", returnstr);
+                        }
+	                    return returnstr;
+                    }
+
+                    // now look for the 'content-disposition' line
+                    respline = copyString(resp); 
                     respline = strstr(respline, "attachment");  // respline would now be the whole string from 'attachment' onwards if it is found
                     if ( respline != NULL )  {  // not NULL so attachment found in the line so this is the content-disposition line!                    
                         // now strip away some of the front 
@@ -1418,7 +1499,8 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
          * Now, our memchunk.memory points to a memory block that is memchunk.size
          * bytes big and contains the returned text from the API.
          *
-         * multiple steps in the code below extract the returned new fileId from the memory block so it can be returned
+         * multiple steps in the code below check the response and if found extract the 
+         *  returned new fileId from the memory block so it can be returned
          */
 	     if (debug==1)
          { 
@@ -1426,7 +1508,34 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
              printf("the full text response is: %s\n", memchunk.memory);
          }
 
-         // first of all check that the upload went OK by looking for "fileId" in memchunk
+         // first of all check that a valid galId was sent
+         response = strstr(memchunk.memory, "gallery does not exist");        // response should now be the whole string from this 'error' onwards
+         if ( response != NULL )  {  // "gallery does not exist" string found!
+             printf ("\n*** a valid galID was not sent! ***");
+             printf ("\n\n");
+             returnstr = copyString("invalid galId sent");
+	         if (debug==1)
+             {
+                 printf ("full response text is: %s\n", memchunk.memory);
+                 printf ("returnstr set to              : %s\n", returnstr);
+             }
+
+             /* cleanup curl stuff */
+             curl_easy_cleanup(curl_handle);
+             free(memchunk.memory);
+             /* we are done with libcurl, so clean it up */
+             curl_global_cleanup();
+	         if (debug==1)
+             {
+                 printf ("curl_handle cleaned up\n");
+                 printf ("memchunk.memory freed\n");
+                 printf ("curl_global cleaned up, and ...\n");
+                 printf ("return string is: %s\n", returnstr);
+             }
+	         return returnstr;
+         }
+
+         // now check that the upload went OK by looking for "fileId" in memchunk
          response = strstr(memchunk.memory, "fileId");        // response should now be the whole string from "fileId" onwards
 
          if ( response != NULL )  {  // "fileId" string found!
@@ -1475,27 +1584,22 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
 
          }
 
+         /* cleanup curl stuff */
+         curl_easy_cleanup(curl_handle);
+         free(memchunk.memory);
+         /* we are done with libcurl, so clean it up */
+         curl_global_cleanup();
+	     if (debug==1)
+         {
+            printf ("curl_handle cleaned up\n");
+            printf ("memchunk.memory freed\n");
+            printf ("curl_global cleaned up, and ...\n");
+            printf ("return string is: %s\n", returnstr);
+         }
+	     return returnstr;
+
     }
 
-    /* cleanup curl stuff */
-    curl_easy_cleanup(curl_handle);
-	if (debug==1)
-    {
-        printf ("curl_handle cleaned up\n");
-    }
-    free(memchunk.memory);
-	if (debug==1)
-    {
-        printf ("memchunk.memory freed\n");
-    }
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
-	if (debug==1)
-    {
-        printf ("curl_global cleaned up, and ...\n");
-        printf ("return string is: %s\n", returnstr);
-    }
-	return returnstr;
 }	
 	
 
@@ -1665,7 +1769,34 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
              printf("the full text response is: %s\n", memchunk.memory);
          }
 
-         // first of all check that the upload went OK by looking for "fileId" in memchunk
+         // first of all check that a valid fileId was sent
+         response = strstr(memchunk.memory, "file does not exist");        // response should now be the whole string from this 'error' onwards
+         if ( response != NULL )  {  // "file does not exist" string found!
+             printf ("\n*** a valid fileId was not sent! ***");
+             printf ("\n\n");
+             returnstr = copyString("invalid fileId sent");
+	         if (debug==1)
+             {
+                 printf ("full response text is: %s\n", memchunk.memory);
+                 printf ("returnstr set to              : %s\n", returnstr);
+             }
+
+             /* cleanup curl stuff */
+             curl_easy_cleanup(curl_handle);
+             free(memchunk.memory);
+             /* we are done with libcurl, so clean it up */
+             curl_global_cleanup();
+	         if (debug==1)
+             {
+                 printf ("curl_handle cleaned up\n");
+                 printf ("memchunk.memory freed\n");
+                 printf ("curl_global cleaned up, and ...\n");
+                 printf ("return string is: %s\n", returnstr);
+             }
+	         return returnstr;
+         }
+
+         // now check that the upload went OK by looking for "fileId" in memchunk
          response = strstr(memchunk.memory, "fileId");        // response should now be the whole string from "fileId" onwards
 
          if ( response != NULL )  {  // "fileId" string found! so we did a successful update
@@ -1691,25 +1822,21 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
 
          }
 
+         /* cleanup curl stuff */
+         curl_easy_cleanup(curl_handle);
+         free(memchunk.memory);
+         /* we are done with libcurl, so clean it up */
+         curl_global_cleanup();
+	     if (debug==1)
+         {
+            printf ("curl_handle cleaned up\n");
+            printf ("memchunk.memory freed\n");
+            printf ("curl_global cleaned up, and ...\n");
+            printf ("return string is: %s\n", returnstr);
+         }
+	     return returnstr;
+
     }
 
-    /* cleanup curl stuff */
-    curl_easy_cleanup(curl_handle);
-	if (debug==1)
-    {
-        printf ("curl_handle cleaned up\n");
-    }
-    free(memchunk.memory);
-	if (debug==1)
-    {
-        printf ("memchunk.memory freed\n");
-    }
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
-	if (debug==1)
-    {
-        printf ("curl_global cleaned up, and ...\n");
-    }
-	return returnstr;
 }	
 	

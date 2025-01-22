@@ -1,16 +1,16 @@
 #!/usr/bin/python
-# version: 241230
+# version: 250107
 # python code template to be configured as required
-# file name: IoT_just_upload_new_tracker_item_241230.py - uploads a new item to a tracker
-# uses the control_iot_241230.c and control_iot_241230.h functions compiled as a shared library libcontrol_iot_241230.so
+# file name: IoT_just_upload_new_tracker_item_250107.py - uploads a new item to a tracker
+# uses the control_iot_250107.c and control_iot_250107.h functions compiled as a shared library libcontrol_iot_250107.so
 # Author : Geoff Brickell
-# Date   : 241230
+# Date   : 250107
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_upload_new_tracker_item_241230.py
+#    sudo python3 /your_file_path/IoT_just_upload_new_tracker_item_250107.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 241230
+#  and should be substituted for the versions being used e.g. 250107
 
 # *****************
 # *** IMPORTANT *** 
@@ -40,7 +40,7 @@ debug = 1   # set to 1 to see lots of additional output!!
 # common that can be used in different IoT contexts 
 #  The .so library is created with the following gcc compiler command (where folder paths will have to be adjusted!):
 #  gcc -shared -o /your_file_path/libcontrol_iot_YYMMDD.so -fPIC /your_file_path/control_iot_YYMMDD.c -I/usr/local/include -L/usr/local/lib -lcurl
-# The following 'install' may be needed on a RPi or NVIDIA Jetson Nano/Orin:
+# The following 'install' may be needed on a RPi:
 # sudo apt install curl                       (this is usually already installed)
 # sudo apt-get install libcurl4-openssl-dev   (this is more likely to be needed to avoid a gcc fatal error from curl/curl.h not being found)
 
@@ -78,7 +78,7 @@ nowepoch = round(time.time())              # BUT MUST USE the raw epoch integer 
 
 # new tracker item post data
 #  this is just an example where the permanent field names (e.g. IoTtestDeviceName) are all individually given values
-post_itemdata =  "fields[IoTtestDeviceName]=rpi5-01&fields[IoTtestUser]=rpi5-01&fields[IoTtestTextData]=just some text&fields[IoTtestNumericalData]=123.456&fields[IoTtestDateTimeData]=" + str(nowepoch) + "&fields[IoTtestTextAreaData]= 'C' code version 241230 for no apostrophies around itemId\r\ntext data line 1\r\ntext data line 2\r\n&fields[IoTtestImage]=1&fields[IoTtestDescription]=data input from the rpi05-01 device using C code version 241230 called from a python program v 241230"
+post_itemdata =  "fields[IoTtestDeviceName]=rpi5-01&fields[IoTtestUser]=rpi5-01&fields[IoTtestTextData]=just some text&fields[IoTtestNumericalData]=123.456&fields[IoTtestDateTimeData]=" + str(nowepoch) + "&fields[IoTtestTextAreaData]= 'C' code version 250107 for no apostrophies around itemId\r\ntext data line 1\r\ntext data line 2\r\n&fields[IoTtestImage]=1&fields[IoTtestDescription]=data input from the rpi05-01 device using C code version 250107 called from a python program v 250107"
 b_post_itemdata = post_itemdata.encode('utf-8')
 
 print ("\ntracker post data: " + str(post_itemdata) )

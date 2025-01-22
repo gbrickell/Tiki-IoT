@@ -1,17 +1,17 @@
 #!/usr/bin/python
-# version: 241230 ###
+# version: 250107 ###
 # python code template to be configured as required
-# file name: IoT_just_check_web_date_241230.py - looks for some specific text content on a web page that preceeds a date
+# file name: IoT_just_check_web_date_250107.py - looks for some specific text content on a web page that preceeds a date
 #  and then checks whether the date is earlier or later than a ref date provided
-# uses the control_iot_241230.c and control_iot_241230.h functions compiled as a shared library libcontrol_iot_241230.so
+# uses the control_iot_250107.c and control_iot_250107.h functions compiled as a shared library libcontrol_iot_250107.so
 # Author : Geoff Brickell
-# Date   : 241230
+# Date   : 250107
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_check_web_date_241230.py
+#    sudo python3 /your_file_path/IoT_just_check_web_date_250107.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 241230
+#  and should be substituted for the versions being used e.g. 250107
 
 # *****************
 # *** IMPORTANT *** 
@@ -41,7 +41,7 @@ debug = 1   # set to 1 to see lots of additional output!!
 # common that can be used in different IoT contexts 
 #  The .so library is created with the following gcc compiler command (where folder paths will have to be adjusted!):
 #  gcc -shared -o /your_file_path/libcontrol_iot_YYMMDD.so -fPIC /your_file_path/control_iot_YYMMDD.c -I/usr/local/include -L/usr/local/lib -lcurl
-# The following 'install' may be needed on a RPi or NVIDIA Jetson Nano/Orin:
+# The following 'install' may be needed on a RPi:
 # sudo apt install curl                       (this is usually already installed)
 # sudo apt-get install libcurl4-openssl-dev   (this is more likely to be needed to avoid a gcc fatal error from curl/curl.h not being found)
 
