@@ -10,7 +10,7 @@ char* webpage_download(int debug, const char* domain, const char* page, char* ac
 
 char* webpage_check(int debug, const char* domain, const char* page, char* access_token, const char* check_text);
 
-char* webpage_datetimecheck(int debug, const char* domain, const char* page, char* access_token, const char* infront_text, int datelen, const char* ref_datetime, const char* datetime_fmt);
+char* webpage_datetimecheck(int debug, const char* domain, const char* page, char* access_token, const char* infront_text, int datelen, const char* ref_datetime, const char* refdatetime_fmt, const char* checkeddatetime_fmt);
 
 static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp);
 
@@ -26,4 +26,4 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
 
 char* gallery_fileupload(int debug, const char* domain, char* access_token, const char* filepath, const char* galId, const char* filename, const char* filetitle, const char* filedesc);
 
-char* gallery_fileupdate(int debug, const char* domain, char* access_token, const char* fileId, const char* filepath, const char* filename, const char* filetitle, const char* filedesc);
+char* gallery_fileupdate(int debug, const char* domain, char* access_token, const char* fileId, const char* filepath, const char* filename, const char* filetitle, const char* filedesc, const char* metadata);

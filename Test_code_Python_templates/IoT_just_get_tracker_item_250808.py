@@ -1,16 +1,16 @@
 #!/usr/bin/python
-# version: 250107 ###
+# version: 250808 ###
 # python code template to be configured as required
-# file name: IoT_just_up_file_250107.py - uploads a file to a File gallery
-# uses the control_iot_250107.c and control_iot_250107.h functions compiled as a shared library libcontrol_iot_250107.so
+# file name: IoT_just_get_tracker_item_250808.py - downloads the field data of a specified tracker item
+# uses the control_iot_250808.c and control_iot_250808.h functions compiled as a shared library libcontrol_iot_250808.so
 # Author : Geoff Brickell
-# Date   : 250107
+# Date   : 250808
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_up_file_250107.py
+#    sudo python3 /your_file_path/IoT_just_get_tracker_item_250808.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 250107
+#  and should be substituted for the versions being used e.g. 250808
 
 # *****************
 # *** IMPORTANT *** 
@@ -24,7 +24,6 @@
 ####            various python functions            ####
 ####                but not all used!               ####
 ########################################################
-
 
 
 ########################################################
@@ -50,7 +49,6 @@ import ctypes    # use ctypes so that the C code can be called from python
 # libcontrol_iot_YYMMDD.so compiled using control_iot_YYMMDD.c and control_iot_YYMMDD.h
 pi_iot_control_YYMMDD = ctypes.CDLL("/your_file_path/libcontrol_iot_YYMMDD.so")
 
-
 #############################################################################
 #call the IoT library 'connect' function to check the 'connection' to the   #
 #compiled 'C' library - it should just display a simple 'hello' set of text #
@@ -71,32 +69,33 @@ b_domain = domain.encode('utf-8')
 access_token = "Authorization: Bearer your_unique_security_access_token"    # Tiki API token for a specific Tiki user
 b_access_token = access_token.encode('utf-8')
 
-filepath = "/your_path/filename.jpg"   # update to your your path/name/type and path should include the first / character
-b_filepath = filepath.encode('utf-8')
+trackerId = "1"     # update to your tracker#
+b_trackerId = trackerId.encode('utf-8')
 
-galId = "6"    # update to the Id# of your File gallery
-b_galId = galId.encode('utf-8')
-
-filename = "image_name.jpg"     # update to the name and type of your image
-b_filename = filename.encode('utf-8')
-
-filetitle = "your image title for the File gallery entry"   # update to your title text
-b_filetitle = filetitle.encode('utf-8')
-
-filedesc = "your image description for the File gallery entry"   # update to your description text
-b_filedesc = filedesc.encode('utf-8')
+itemIdget = "27"    # update to your tracker item#
+b_itemIdget = itemIdget.encode('utf-8')
 
 
-
-###########################################
-# call the gallery_fileupload C function, #
-#  to upload a new file to a File gallery #
-###########################################
-pi_iot_control_YYMMDD.gallery_fileupload.restype = ctypes.c_char_p # override the default return type (int)
-response = str( pi_iot_control_YYMMDD.gallery_fileupload(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_filepath), ctypes.c_char_p(b_galId), ctypes.c_char_p(b_filename), ctypes.c_char_p(b_filetitle), ctypes.c_char_p(b_filedesc) ) )
-
-print ("\n*** gallery_fileupload response: " )
+#####################################################
+# call the tracker_itemget C function, to get       #
+# an existing tracker item passing it correctly     #
+# defined char variables using ctypes               #
+#####################################################
+pi_iot_control_YYMMDD.tracker_itemget.restype = ctypes.c_char_p # override the default return type (int)
+response = str( pi_iot_control_YYMMDD.tracker_itemget(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_trackerId), ctypes.c_char_p(b_itemIdget)  ) )
+print ("\n*** tracker_itemget response: " )
+response = response[2:-1]
 print ( response )
-print ("\n*** new File gallery fileId#: " )
-print ( response[2:-1] )
-print ("\n \n" )
+if "no response" in response or "failed" in response :
+    print("\n curl request failed or response was empty \n")
+elif "Success text not found" in response :
+    print("\n tracker item API response not correct\n")
+else:
+    respdict = eval(response)     # response string should now have a dictionary-like format so create an actual dictionary!
+    print ("\n \n" )
+    for key, value in respdict.items():
+        print (key, " - ", value)
+
+
+
+

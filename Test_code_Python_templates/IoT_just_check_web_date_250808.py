@@ -1,16 +1,17 @@
 #!/usr/bin/python
-# version: 250107
+# version: 250808 ###
 # python code template to be configured as required
-# file name: IoT_just_update_tracker_item_250107.py - updates the field data of an existing tracker item
-# uses the control_iot_250107.c and control_iot_250107.h functions compiled as a shared library libcontrol_iot_250107.so
+# file name: IoT_just_check_web_date_250808.py - looks for some specific text content on a web page that preceeds a date
+#  and then checks whether the date is earlier or later than a ref date provided
+# uses the control_iot_250808.c and control_iot_250808.h functions compiled as a shared library libcontrol_iot_250808.so
 # Author : Geoff Brickell
-# Date   : 250107
+# Date   : 250808
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_update_tracker_item_250107.py
+#    sudo python3 /your_file_path/IoT_just_check_web_date_250808.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 250107
+#  and should be substituted for the versions being used e.g. 250808
 
 # *****************
 # *** IMPORTANT *** 
@@ -65,36 +66,41 @@ pi_iot_control_YYMMDD.connect_iot()
 domain = "https://example_domain.com"      # must include https:// but no trailing /
 b_domain = domain.encode('utf-8')
 
+page = "/your%20eample%20page"  # must include the leading / and spaces 'filled' with %20 NOT + or -
+b_page = page.encode('utf-8')
+
+infront_text = "marker-text"  # make sure there is not a space at the end of the 'infront_text'
+b_infront_text = infront_text.encode('utf-8')
+
+datelen = 23 # length of the date text string being used
+refdatetime = "2023-12-07 11:20:50 GMT"  # update to your reference date-time
+                                         # must use the datetime format specified in datetime_fmt
+                                         # which must also be the same format used on the Tiki site 
+                                         # the 'C' code will convert this to an epoch integer for 'comparing'
+b_refdatetime = refdatetime.encode('utf-8')
+
+datetime_fmt = "%Y-%m-%d %H:%M:%S %Z"    # update to your date-time format
+b_datetime_fmt = datetime_fmt.encode('utf-8')
+
 # include 'Authorization: Bearer' ahead of the token text as shown below
 access_token = "Authorization: Bearer your_unique_security_access_token"    # Tiki API token for a specific Tiki user
 b_access_token = access_token.encode('utf-8')
 
-trackerId = "1"     # update to your tracker#
-b_trackerId = trackerId.encode('utf-8')
 
-itemIdget = "27"    # update to your tracker item#
-b_itemIdget = itemIdget.encode('utf-8')
-
-# this section of code is just to get a current time for one of the fields to be updated
-now = time.strftime("%d %b %Y %H:%M:%S")   # this creates a string in a designated format e.g. 27 Dec 2021 11:05:27
-nowepoch = round(time.time())              # BUT MUST USE the raw epoch integer to upload to a tracker to avoid time zone confusions!!
-
-# update tracker item post data
-#  this is just an example where the permanent field names (e.g. IoTtestDeviceName) are all individually given new values
-update_itemdata =  "fields[IoTtestDeviceName]=rpi5-01c&fields[IoTtestUser]=rpi5-01&fields[IoTtestTextData]=python updated text&fields[IoTtestNumericalData]=789.0456&fields[IoTtestDateTimeData]=" + str(nowepoch) + "&fields[IoTtestTextAreaData]='C' code for no apostrophies around itemId\r\nupdated text data line 1\r\nupdated text data line 2\r\n&fields[IoTtestImage]=2&fields[IoTtestDescription]=updated item data sent from the rpi05-01 device using C code called from a python program"
-b_update_itemdata = update_itemdata.encode('utf-8')
-
-
-
-#####################################################
-# call the tracker_itemupdate C function, to update #
-# an existing tracker item passing it correctly     #
-# defined char variables using ctypes               #
-#####################################################
-pi_iot_control_YYMMDD.tracker_itemupdate.restype = ctypes.c_char_p # override the default return type (int)
-response = str( pi_iot_control_YYMMDD.tracker_itemupdate(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_trackerId), ctypes.c_char_p(b_itemIdupdate), ctypes.c_char_p(b_update_itemdata) ) )
-
-print ("\n*** tracker_itemupdate response: " )
-print ( response )
-print ("\n \n" )
+######################################################
+# call the webpage_datetimecheck C function, passing #
+# it correctly defined char variables using ctypes   #
+# returns TRUE if found date is newer than sent date #
+######################################################
+pi_iot_control_YYMMDD.webpage_datetimecheck.restype = ctypes.c_char_p # override the default return type (int)
+timeresponse = (pi_iot_control_YYMMDD.webpage_datetimecheck(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_page), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_infront_text), ctypes.c_int(datelen), ctypes.c_char_p(b_refdatetime), ctypes.c_char_p(b_datetime_fmt) ) )
+print ("response: " + str(timeresponse))
+if "true" in str(timeresponse):
+    print ("\n*** webpage_datetimecheck is TRUE\n")
+elif "false"  in str(timeresponse):
+    print ("\n*** webpage_datetimecheck is FALSE\n")
+elif "not found" in str(timeresponse):
+    print ("\n*** webpage_datetimecheck: text 'in front' not found\n")
+else:
+    print ("\n*** unknown response from webpage_datetimecheck *** ")
 

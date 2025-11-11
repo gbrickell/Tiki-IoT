@@ -1,16 +1,16 @@
 #!/usr/bin/python
-# version: 250107 ###
+# version: 250808 ###
 # python code template to be configured as required
-# file name: IoT_just_download_web_page_250107.py - downloads the content of a web page and its associated wiki parameters
-# uses the control_iot_250107.c and control_iot_250107.h functions compiled as a shared library libcontrol_iot_250107.so
+# file name: IoT_just_down_file_250808.py - just downloads a file from a File gallery defined by its Tiki fileId#
+# uses the control_iot_250808.c and control_iot_250808.h functions compiled as a shared library libcontrol_iot_250808.so
 # Author : Geoff Brickell
-# Date   : 250107
+# Date   : 250808
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_download_web_page_250107.py
+#    sudo python3 /your_file_path/IoT_just_down_file_250808.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 250107
+#  and should be substituted for the versions being used e.g. 250808
 
 # *****************
 # *** IMPORTANT *** 
@@ -24,7 +24,6 @@
 ####            various python functions            ####
 ####                but not all used!               ####
 ########################################################
-
 
 
 ########################################################
@@ -70,20 +69,45 @@ b_domain = domain.encode('utf-8')
 access_token = "Authorization: Bearer your_unique_security_access_token"    # Tiki API token for a specific Tiki user
 b_access_token = access_token.encode('utf-8')
 
-page = "/your%20example%20page"  # must include the leading / and spaces 'filled' with %20 NOT + or -
-b_page = page.encode('utf-8')
+fileIddown = "19"            # update to your fileId
+b_fileIddown = fileIddown.encode('utf-8')
+
+filespath = "/your_path/your_folder/"   # update to your path/folder name and should include both the first and last / character
+b_filespath = filespath.encode('utf-8')
+
+downfilename = "yourfilename.png"       # update to your filename/image type
+b_downfilename = downfilename.encode('utf-8')
+
+emptyfilename = ""
+b_emptyfilename = emptyfilename.encode('utf-8')
+
+downheaderfilename = "testheaders.txt"    # used as a temporary location for header info
+b_downheaderfilename = downheaderfilename.encode('utf-8')
+
+downheaderfilename2 = "testheaders2.txt"  # used as a 2nd temporary location for header info
+b_downheaderfilename2 = downheaderfilename2.encode('utf-8')
 
 
 #####################################################
-# call the webpage_download C function, passing     #
-# it correctly defined char variables using ctypes  #
+# call the gallery_filedownload C function, to get  #
+# an existing file gallery file passing it an       #
+# explicit file name                                #
 #####################################################
-pi_iot_control_YYMMDD.webpage_download.restype = ctypes.c_char_p # override the default return type (int)
-response = str(pi_iot_control_YYMMDD.webpage_download(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_page), ctypes.c_char_p(b_access_token) ) )
+pi_iot_control_YYMMDD.gallery_filedownload.restype = ctypes.c_char_p # override the default return type (int)
+response = str( pi_iot_control_YYMMDD.gallery_filedownload(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_fileIddown), ctypes.c_char_p(b_filespath), ctypes.c_char_p(b_downfilename), ctypes.c_char_p(b_downheaderfilename)  ) )
 
-print ("\n*** wiki page download response: " )
+print ("\n*** gallery_filedownload response: " )
+print ( response ) 
+
+
+
+#####################################################
+# call the gallery_filedownload C function, to get  #
+# an existing file gallery file passing it an       #
+# empty file name to trigger the use of a temp name #
+#####################################################
+pi_iot_control_YYMMDD.gallery_filedownload.restype = ctypes.c_char_p # override the default return type (int)
+response = str( pi_iot_control_YYMMDD.gallery_filedownload(ctypes.c_int(debug), ctypes.c_char_p(b_domain), ctypes.c_char_p(b_access_token), ctypes.c_char_p(b_fileIddown), ctypes.c_char_p(b_filespath), ctypes.c_char_p(b_emptyfilename), ctypes.c_char_p(b_downheaderfilename2)  ) )
+
+print ("\n*** gallery_filedownload response: " )
 print ( response )
-print ("\n \n" )
-
-
-
