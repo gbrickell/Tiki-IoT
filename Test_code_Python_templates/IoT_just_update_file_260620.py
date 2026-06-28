@@ -1,16 +1,16 @@
 #!/usr/bin/python
-# version: 250808 ###
+# version: 260620 ###
 # python code template to be configured as required
-# file name: IoT_just_update_file_250808.py - updates the details of an existing file in a File gallery
-# uses the control_iot_250808.c and control_iot_250808.h functions compiled as a shared library libcontrol_iot_250808.so
+# file name: IoT_just_update_file_260620.py - updates the details of an existing file in a File gallery
+# uses the control_iot_260620.c and control_iot_260620.h functions compiled as a shared library libcontrol_iot_260620.so
 # Author : Geoff Brickell
-# Date   : 250808
+# Date   : 260620
 # command to run in a CLI window - adjust the file path to suit your local device system: 
-#    sudo python3 /your_file_path/IoT_just_update_file_250808.py
+#    sudo python3 /your_file_path/IoT_just_update_file_260620.py
 #  - run the command from the device CLI window to 'see' all the various responses/outputs from the Python and 'C' code
 #
 # In the code/comments below YYMMDD is used to signify version control/release 
-#  and should be substituted for the versions being used e.g. 250808
+#  and should be substituted for the versions being used e.g. 260620
 
 # *****************
 # *** IMPORTANT *** 

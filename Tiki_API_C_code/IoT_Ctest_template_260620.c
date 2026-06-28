@@ -1,5 +1,5 @@
-// standalone 'C' program template (IoT_Ctest_template_250808.c) to just demonstrate/test 
-// some of Tiki access functions provided in control_iot_250808.c 
+// standalone 'C' program template (IoT_Ctest_template_260620.c) to just demonstrate/test 
+// some of Tiki access functions provided in control_iot_260620.c 
 
 // this template provides example code, but needs to be configured for the specific use
 
@@ -7,9 +7,9 @@
 // using many of the examples from https://curl.se/libcurl/c/libcurl.html
 
 // compiled using gcc on a local 'integrating' hub device using the command:
-// gcc -o /your_path_to_compiled_result/Ctest_IoT_250808.exe /your_path_to_this_file/IoT_Ctest_template_250808.c /your_path_to/control_iot_250808.c -I/usr/local/include -L/usr/local/lib -lcurl
+// gcc -o /your_path_to_compiled_result/Ctest_IoT_260620.exe /your_path_to_this_file/IoT_Ctest_template_260620.c /your_path_to/control_iot_260620.c -I/usr/local/include -L/usr/local/lib -lcurl
 
-// run using the command: /your_path_to/Ctest_IoT_250808.exe
+// run using the command: /your_path_to/Ctest_IoT_260620.exe
 
 #define _XOPEN_SOURCE 700
 #define _GNU_SOURCE /* for tm_gmtoff and tm_zone */
@@ -19,25 +19,7 @@
 #include <stdbool.h>   // allows the use of bool, true and false which are otherwise not available in C
 #include <string.h>
 #include <curl/curl.h>
-#include "control_iot_250808.h"
-
-// declaration of functions being used to avoid gcc warnings
-long int findSize(const char* file_name);
-char* copyString(char s[]);
-void removeString (char text[], int index, int rm_length);
-void connect_iot();
-char* webpage_download(int debug, const char* domain, const char* page, char* access_token);
-_Bool webpage_check(int debug, const char* domain, const char* page, char* access_token, const char* check_text);
-char* webpage_datetimecheck(int debug, const char* domain, const char* page, char* access_token, const char* infront_text, int datelen, const char* ref_datetime, const char* datetime_fmt);
-static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp);
-static size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream);
-char* tracker_item_post(int debug, const char* domain, const char* page, const char* access_token, const char* post_data);
-char* tracker_itemupdate(int debug, const char* domain, char* access_token, const char* trackerId, const char* itemId, const char* post_data);
-char* tracker_itemget(int debug, const char* domain, char* access_token, const char* trackerId, const char* itemId);
-char* gallery_filedownload(int debug, const char* domain, char* access_token, const char* fileId, const char* filespath, const char* bodyfilename, const char* headerfilename);
-char* gallery_fileupload(int debug, const char* domain, char* access_token, const char* filepath, const char* galId, const char* filename, const char* filetitle, const char* filedesc);
-char* gallery_fileupdate(int debug, const char* domain, char* access_token, const char* fileId, const char* filepath, const char* filename, const char* filetitle, const char* filedesc, const char* metadata);
-
+#include "control_iot_260620.h"
 
 // ******************************
 // *****    main code      ******
@@ -45,7 +27,7 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
 
 int main(){
 
-    connect_iot();  // which display the version of the C functions being used
+    connect_iot();  // which displays the version of the C functions being used
     printf("Hello: now running various function tests\n\n");
     int debug = 1;
 
@@ -62,7 +44,7 @@ int main(){
     const char* trackerId = "1";   // update to your tracker#
 
     // define tracker item post data with individual field data using their Tiki permanent field names
-    // this is just an example where the field names (e.g. IoTtestDeviceName) are all individually given values
+    // this is just an example where the field names (e.g. IoTtestDeviceName) are all individually given values and need to be updated to your tracker field names and values
     // - it should be noted that special characters like % should be avoided in text field updates as they can cause errors
     char post_data[500] = "fields[IoTtestDeviceName]=pitikiP48GB&fields[IoTtestUser]=pikitP48GB&fields[IoTtestTextData]=just some text&fields[IoTtestNumericalData]=123.456&fields[IoTtestTextAreaData]=text data line 1\r\ntext data line 2\r\n&fields[IoTtestImage]=2243&fields[IoTtestDescription]=data input using all C code";
 
@@ -102,11 +84,17 @@ int main(){
     } else {
         printf ("webpage_check is FALSE\n");
     }
+    printf ("\n***************************************************************\n\n\n");
 
+    // do the tracker item post
+    // ************************
+    printf ("\n************ post tracker item ************************************\n");
     // do the new tracker item post which returns the new itemId#
     char* response = tracker_itempost(debug, domain, access_token, trackerId, post_data);
-    printf ("\n************ post tracker item ************************************\n");
+
     printf ("tracker upload response is: %s\n", response);;
+
+    printf ("\n***************************************************************\n\n\n");
 
     return 0; 
 }	

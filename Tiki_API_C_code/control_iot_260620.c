@@ -11,6 +11,7 @@
 //  - add #include <unistd.h> // to use sleep() in various places
 //  - start using CURLOPT_ERRORBUFFER to collect more error data for failed curl request
 // further update release 250808 to refine and extend the use of CURLOPT_ERRORBUFFER and avoid logging the more generic 'libcurl: (0)' text (which means 'No error') in stderr
+// further update release 260620 to extensively refactor, creating several new/common functions
 
 // *****************
 // *** IMPORTANT *** 
@@ -29,16 +30,27 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <curl/curl.h>
-#include "control_iot_250808.h"
+#include "control_iot_260620.h"
 
 int debug;
 
-char swver[8] = "250808";
+char swver[8] = "260620";
 
 struct MemoryStruct {
   char *memory;
   size_t size;
 };
+
+static char* safe_copy_string(const char *s);
+static int build_api_url(char *buffer, size_t buffer_size, const char *domain, const char *path);
+static struct curl_slist* build_json_auth_headers(const char *access_token, bool include_content_type, bool multipart);
+static char* curl_error_message(CURLcode res, char errbuf[CURL_ERROR_SIZE], const char *context);
+static char* perform_memory_request(int debug, const char *url, struct curl_slist *headers, const char *post_data, long post_fields_size, struct MemoryStruct *memchunk, char errbuf[CURL_ERROR_SIZE]);
+static int setup_multipart_curl(CURL **curl_handle, struct MemoryStruct *memchunk, char errbuf[CURL_ERROR_SIZE], const char *url);
+static char* handle_curl_result(int debug, CURLcode res, char errbuf[CURL_ERROR_SIZE], const struct MemoryStruct *memchunk, const char *error_message_prefix);
+static char* extract_and_copy_between(char *text, const char *prefix, const char *suffix);
+static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp);
+static size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream);
 
 
 // ************************************
@@ -60,15 +72,23 @@ long int findSize(const char* file_name)
 // ********************************
 // Function to copy a string
 // ********************************
+static char* safe_copy_string(const char *s)
+{
+    if (s == NULL) {
+        return NULL;
+    }
+    size_t len = strlen(s);
+    char *copy = malloc(len + 1);
+    if (copy == NULL) {
+        return NULL;
+    }
+    memcpy(copy, s, len + 1);
+    return copy;
+}
+
 char* copyString(char s[])
 {
-    // passed parameter s is the string to be copied
-    // returns a copy of the string
-    char* s2;
-    s2 = (char*)malloc(10000);   // this is made very large just in case some API responses are very long!
- 
-    strcpy(s2, s);  // s2 is the destination string, s is the source string
-    return (char*)s2;
+    return safe_copy_string(s);
 }
 
 
@@ -96,6 +116,184 @@ void removeString (char text[], int index, int rm_length)
     } while ( text[i++] != '\0' );
 }
 
+static int build_api_url(char *buffer, size_t buffer_size, const char *domain, const char *path)
+{
+    if (!buffer || !domain || !path) {
+        return -1;
+    }
+    int written = snprintf(buffer, buffer_size, "%s%s", domain, path);
+    if (written < 0 || (size_t)written >= buffer_size) {
+        if (buffer_size > 0) {
+            buffer[0] = '\0';
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static struct curl_slist* build_json_auth_headers(const char *access_token, bool include_content_type, bool multipart)
+{
+    struct curl_slist *headchunk = NULL;
+    if (include_content_type) {
+        headchunk = curl_slist_append(headchunk, multipart ? "Content-Type: multipart/form-data" : "Content-Type: application/x-www-form-urlencoded");
+    }
+    headchunk = curl_slist_append(headchunk, "accept: application/json");
+    headchunk = curl_slist_append(headchunk, access_token);
+    return headchunk;
+}
+
+static char* curl_error_message(CURLcode res, char errbuf[CURL_ERROR_SIZE], const char *context)
+{
+    if (errbuf != NULL && errbuf[0] != '\0') {
+        size_t buflen = strlen(errbuf);
+        if (!(buflen == 4 && strcmp(errbuf, "0") == 0)) {
+            char message[512];
+            snprintf(message, sizeof(message), "%s failed: %s", context ? context : "curl request", errbuf);
+            return safe_copy_string(message);
+        }
+    }
+    return safe_copy_string(context);
+}
+
+static char* perform_memory_request(int debug, const char *url, struct curl_slist *headers, const char *post_data, long post_fields_size, struct MemoryStruct *memchunk, char errbuf[CURL_ERROR_SIZE])
+{
+    CURL *curl_handle;
+    CURLcode res;
+    char *returnstr = "";
+
+    memchunk->memory = malloc(1);
+    if (memchunk->memory == NULL) {
+        return safe_copy_string("out of memory allocating curl response buffer");
+    }
+    memchunk->memory[0] = '\0';
+    memchunk->size = 0;
+
+    curl_global_init(CURL_GLOBAL_ALL);
+    curl_handle = curl_easy_init();
+    if (curl_handle == NULL) {
+        free(memchunk->memory);
+        curl_global_cleanup();
+        return safe_copy_string("curl_easy_init failed");
+    }
+
+    curl_easy_setopt(curl_handle, CURLOPT_URL, url);
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)memchunk);
+    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
+    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
+    if (headers != NULL) {
+        curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
+    }
+    if (post_data != NULL) {
+        curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, post_data);
+        if (post_fields_size >= 0) {
+            curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, post_fields_size);
+        }
+    }
+
+    errbuf[0] = 0;
+    res = curl_easy_perform(curl_handle);
+    if (debug == 1) {
+        printf("curl_easy_perform() returned %d\n", res);
+    }
+    if (res != CURLE_OK) {
+        returnstr = curl_error_message(res, errbuf, "curl request");
+    }
+
+    curl_easy_cleanup(curl_handle);
+    curl_global_cleanup();
+    return returnstr;
+}
+
+static char* extract_and_copy_between(char *text, const char *prefix, const char *suffix)
+{
+    char *start = strstr(text, prefix);
+    if (!start) {
+        return NULL;
+    }
+    start += strlen(prefix);
+    if (suffix) {
+        char *end = strstr(start, suffix);
+        if (end) {
+            *end = '\0';
+        }
+    }
+    return safe_copy_string(start);
+}
+
+static char* safe_append_suffix(const char *prefix, const char *suffix)
+{
+    size_t plen = strlen(prefix);
+    size_t slen = strlen(suffix);
+    char *result = malloc(plen + slen + 1);
+    if (result == NULL) {
+        return NULL;
+    }
+    memcpy(result, prefix, plen);
+    memcpy(result + plen, suffix, slen + 1);
+    return result;
+}
+
+static int setup_multipart_curl(CURL **curl_handle, struct MemoryStruct *memchunk, char errbuf[CURL_ERROR_SIZE], const char *url)
+{
+    memchunk->memory = malloc(1);
+    if (memchunk->memory == NULL) {
+        return -1;
+    }
+    memchunk->memory[0] = '\0';
+    memchunk->size = 0;
+
+    curl_global_init(CURL_GLOBAL_ALL);
+    *curl_handle = curl_easy_init();
+    if (*curl_handle == NULL) {
+        free(memchunk->memory);
+        curl_global_cleanup();
+        return -1;
+    }
+
+    curl_easy_setopt(*curl_handle, CURLOPT_URL, url);
+    curl_easy_setopt(*curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+    curl_easy_setopt(*curl_handle, CURLOPT_WRITEDATA, (void *)memchunk);
+    curl_easy_setopt(*curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
+    curl_easy_setopt(*curl_handle, CURLOPT_ERRORBUFFER, errbuf);
+    errbuf[0] = 0;
+    return 0;
+}
+
+static char* handle_curl_result(int debug, CURLcode res, char errbuf[CURL_ERROR_SIZE], const struct MemoryStruct *memchunk, const char *error_message_prefix)
+{
+    if (res != CURLE_OK) {
+        fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        size_t buflen = strlen(errbuf);
+        fprintf(stderr, "\nlibcurl: (%d) ", res);
+        if (buflen) {
+            fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
+        } else {
+            fprintf(stderr, "%s\n", curl_easy_strerror(res));
+        }
+        return safe_copy_string(error_message_prefix);
+    }
+
+    if (memchunk->size == 0) {
+        if (debug == 1) {
+            printf("the curl request may have been processed BUT there was an empty response from the server API\n");
+        }
+        size_t buflen = strlen(errbuf);
+        if (buflen) {
+            char *errresp = strstr(errbuf, "0");
+            if (errresp == NULL) {
+                fprintf(stderr, "\nlibcurl: (%d) ", res);
+                fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
+                return safe_copy_string("empty response from the curl request sent to the server API - see error log for more detail");
+            }
+        } else {
+            return safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
+        }
+    }
+
+    return NULL;
+}
+
 // ************************************************************
 // this simple 'connection' function included for test purposes
 // ************************************************************
@@ -119,7 +317,6 @@ char* webpage_download(int debug, const char* domain, const char* page, char* ac
     // access_token: the API access token that enables specific permissions for the API usage
     // web page content is returned as returnstr from the cURL response
 
-    char *errresp = "";
     char errbuf[CURL_ERROR_SIZE];
     char *returnstr = "";
 	if (debug==1)
@@ -128,12 +325,13 @@ char* webpage_download(int debug, const char* domain, const char* page, char* ac
        printf ("domain name is: %s\n", domain);
        printf ("page name is: %s\n", page);
     }
-    // build the full wiki API URL
-    char wiki_api[15] = "/api/wiki/page";
-	char API_URL[100] = "";
-    strcat(API_URL, domain);
-    strcat(API_URL, wiki_api);
-	strcat(API_URL, page);
+    char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/wiki/page") != 0) {
+        return safe_copy_string("API URL was too long");
+    }
+    if (snprintf(API_URL + strlen(API_URL), sizeof(API_URL) - strlen(API_URL), "%s", page) >= (int)(sizeof(API_URL) - strlen(API_URL))) {
+        return safe_copy_string("API URL was too long");
+    }
 	if (debug==1)
     {
        printf ("\n *** debug from webpage_download ...\n");
@@ -141,66 +339,13 @@ char* webpage_download(int debug, const char* domain, const char* page, char* ac
 	}
 
     // GET the content of the web page
-    CURL *curl_handle;
-    CURLcode res;
     struct MemoryStruct memchunk;
-    memchunk.memory = malloc(1);  /* will be grown as needed by the realloc above */
-    memchunk.size = 0;    /* no data at this point */
- 
-    curl_global_init(CURL_GLOBAL_ALL);
-    /* init the curl session */
-    curl_handle = curl_easy_init();
-    /* specify URL to get */
-    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
-    /* send all data to this function  */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-    /* we pass our 'memchunk' struct to the callback function */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&memchunk);
-    /* some servers do not like requests that are made without a user-agent field, so we provide one */
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
-
-    // set the custom headers 
-    struct curl_slist *headchunk = NULL;
-    // Add the accept header */
-    headchunk = curl_slist_append(headchunk, "accept: application/json");
-    // Add the authorization header */
-    headchunk = curl_slist_append(headchunk, access_token);
-    // set the headers   
-    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headchunk);
-
-    /* set the error buffer as empty before performing a request */
-    errbuf[0] = 0;    
-    /* get it! */
-    res = curl_easy_perform(curl_handle);
-    curl_slist_free_all(headchunk); /* free the list */
- 
-    /* check for different response conditions and print any errors */
-    if(res != CURLE_OK) {
-         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        /* add detailed error text to the stderr log */
-         size_t buflen = strlen(errbuf);
-         fprintf(stderr, "\nlibcurl: (%d) ", res);
-         if (buflen) {
-             fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-         } else {
-             fprintf(stderr, "%s\n", curl_easy_strerror(res));
-         }
-         returnstr = copyString("curl access to the Tiki site for the web page download function failed - see error log for more detail");
-    } else if (memchunk.size == 0) {
+    struct curl_slist *headchunk = build_json_auth_headers(access_token, false, false);
+    returnstr = perform_memory_request(debug, API_URL, headchunk, NULL, -1, &memchunk, errbuf);
+    curl_slist_free_all(headchunk);
+    if (returnstr == NULL && memchunk.size == 0) {
          printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         // check if perhaps? there is something in the errbuf even though CURLE_OK was received and it is NOT the 'libcurl: (0)' text //
-         size_t buflen = strlen(errbuf);
-		 if (buflen) {
-		     errresp = strstr(errbuf, "0");
-			 if ( errresp == NULL )  {  // "0" string not found so populate stderr log!
-                 fprintf(stderr, "\nlibcurl: (%d) ", res);
-			     fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-				 returnstr = copyString("empty response from the curl request sent to the server API - see error log for more detail");
-			 }
-         } else {
-		     returnstr = copyString("empty response from the curl request sent to the server API - you should check if the request has been processed");
-		 }
+         returnstr = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
     } else {
         /*
         * Now, our memchunk.memory points to a memory block that is memchunk.size
@@ -224,15 +369,10 @@ char* webpage_download(int debug, const char* domain, const char* page, char* ac
              }
 
          } else {
-             returnstr = copyString(memchunk.memory);
-         }
+             returnstr = safe_copy_string(memchunk.memory);
+        }
     }
-
-    /* cleanup curl stuff */
-    curl_easy_cleanup(curl_handle);
     free(memchunk.memory);
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
     if (debug==1)
     {
         printf ("\ncurl_handle cleaned up and memchunk.memory freed\n");
@@ -258,8 +398,6 @@ char* webpage_check(int debug, const char* domain, const char* page, char* acces
     // check_text: text string that is 'looked for' on the web page content
     // check_result is returned as a message string
 
-    char errbuf[CURL_ERROR_SIZE];
-    char *errresp = "";
     char *check_result = "";
 	if (debug==1)
     {
@@ -268,79 +406,27 @@ char* webpage_check(int debug, const char* domain, const char* page, char* acces
        printf ("page name is: %s\n", page);
        printf ("text to be found is: %s\n", check_text);
     }
-    // build the full wiki API URL
-    char wiki_api[15] = "/api/wiki/page";
-	char API_URL[100] = "";
-    strcat(API_URL, domain);
-    strcat(API_URL, wiki_api);
-	strcat(API_URL, page);
+    char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/wiki/page") != 0 ||
+        snprintf(API_URL + strlen(API_URL), sizeof(API_URL) - strlen(API_URL), "%s", page) >= (int)(sizeof(API_URL) - strlen(API_URL))) {
+        return safe_copy_string("API URL was too long");
+    }
 	if (debug==1)
     {
        printf ("\n *** debug from webpage_check ...\n");
        printf ("API URL is: %s\n", API_URL);
 	}
 
-    // GET the content of the web page
-    CURL *curl_handle;
-    CURLcode res;
     struct MemoryStruct memchunk;
-    memchunk.memory = malloc(1);  /* will be grown as needed by the realloc above */
-    memchunk.size = 0;    /* no data at this point */
- 
-    curl_global_init(CURL_GLOBAL_ALL);
-    /* init the curl session */
-    curl_handle = curl_easy_init();
-    /* specify URL to get */
-    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
-    /* send all data to this function  */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-    /* we pass our 'memchunk' struct to the callback function */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&memchunk);
-    /* some servers do not like requests that are made without a user-agent field, so we provide one */
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
-
-    // set the custom headers 
-    struct curl_slist *headchunk = NULL;
-    // Add the accept header */
-    headchunk = curl_slist_append(headchunk, "accept: application/json");
-    // Add the authorization header */
-    headchunk = curl_slist_append(headchunk, access_token);
-    // set the headers   
-    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headchunk);
-
-    /* set the error buffer as empty before performing a request */
-    errbuf[0] = 0;     
-    /* get it! */
-    res = curl_easy_perform(curl_handle);
-    curl_slist_free_all(headchunk); /* free the list */
- 
-    /* check for different response conditions and print any errors */
-    if(res != CURLE_OK) {
-         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        /* add detailed error text to the stderr log */
-         size_t buflen = strlen(errbuf);
-         fprintf(stderr, "\nlibcurl: (%d) ", res);
-         if (buflen) {
-             fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-         } else {
-             fprintf(stderr, "%s\n", curl_easy_strerror(res));
-         }
-         check_result = copyString("curl access to the Tiki site for web content check failed - see error log for more detail");
+    struct curl_slist *headchunk = build_json_auth_headers(access_token, false, false);
+    char errbuf[CURL_ERROR_SIZE];
+    check_result = perform_memory_request(debug, API_URL, headchunk, NULL, -1, &memchunk, errbuf);
+    curl_slist_free_all(headchunk);
+    if (check_result != NULL && strstr(check_result, "curl request") != NULL) {
+         /* request-level error already returned */
     } else if (memchunk.size == 0) {
          printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         // check if perhaps? there is something in the errbuf even though CURLE_OK was received and it is NOT the 'libcurl: (0)' text //
-         size_t buflen = strlen(errbuf);
-         if (buflen) {
-		     errresp = strstr(errbuf, "0");
-			 if ( errresp == NULL )  {  // "0" string not found so populate stderr log!
-                 fprintf(stderr, "\nlibcurl: (%d) ", res);
-			     fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-				 check_result = copyString("empty response from the curl request sent to the server API - see error log for more detail");
-			 }
-         } else {
-		     check_result = copyString("empty response from the curl request sent to the server API - you should check if the request has been processed");
-		 }    
+         check_result = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
     } else {
         /*
         * Now, our memchunk.memory points to a memory block that is memchunk.size
@@ -389,11 +475,7 @@ char* webpage_check(int debug, const char* domain, const char* page, char* acces
 			 }	 
          }
     }
-    /* cleanup curl stuff */
-    curl_easy_cleanup(curl_handle);
     free(memchunk.memory);
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
 
     if (debug==1)
     {
@@ -426,8 +508,6 @@ char* webpage_datetimecheck(int debug, const char* domain, const char* page, cha
     // checkeddatetime_fmt: is the expected format of the date text in the web page content e.g. "%a %d %b %Y %H:%M:%S %Z"
     // check_result_text is returned as a string to indicate the result
 
-    char errbuf[CURL_ERROR_SIZE];
-    char *errresp = "";
     char *check_result_text = "";
     struct tm reftm ;
     memset(&reftm, 0, sizeof(struct tm));     // make sure the struct is initialised otherwise you get crazy numbers
@@ -455,79 +535,27 @@ char* webpage_datetimecheck(int debug, const char* domain, const char* page, cha
        printf ("datelen parameter: %d\n", datelen);
     }
 
-    // build the full wiki API URL
-    char wiki_api[15] = "/api/wiki/page";
-	char API_URL[100] = "";
-    strcat(API_URL, domain);
-    strcat(API_URL, wiki_api);
-	strcat(API_URL, page);
+    char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/wiki/page") != 0 ||
+        snprintf(API_URL + strlen(API_URL), sizeof(API_URL) - strlen(API_URL), "%s", page) >= (int)(sizeof(API_URL) - strlen(API_URL))) {
+        return safe_copy_string("API URL was too long");
+    }
 	if (debug==1)
     {
        printf ("\n *** debug from webpage_datetimecheck ...\n");
        printf ("API URL is: %s\n", API_URL);
 	}
 
-    // GET the content of the web page
-    CURL *curl_handle;
-    CURLcode res;
     struct MemoryStruct memchunk;
-    memchunk.memory = malloc(1);  /* will be grown as needed by the realloc above */
-    memchunk.size = 0;    /* no data at this point */
- 
-    curl_global_init(CURL_GLOBAL_ALL);
-    /* init the curl session */
-    curl_handle = curl_easy_init();
-    /* specify URL to get */
-    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
-    /* send all data to this function  */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-    /* we pass our 'memchunk' struct to the callback function */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&memchunk);
-    /* some servers do not like requests that are made without a user-agent field, so we provide one */
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
-
-    // set the custom headers 
-    struct curl_slist *headchunk = NULL;
-    // Add the accept header */
-    headchunk = curl_slist_append(headchunk, "accept: application/json");
-    // Add the authorization header */
-    headchunk = curl_slist_append(headchunk, access_token);
-    // set the headers   
-    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headchunk);
-
-    /* set the error buffer as empty before performing a request */
-    errbuf[0] = 0; 
-    /* get it! */
-    res = curl_easy_perform(curl_handle);
-    curl_slist_free_all(headchunk); /* free the list */
- 
-    /* check for different response conditions and print any errors */
-    if(res != CURLE_OK) {
-         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        /* add detailed error text to the stderr log */
-         size_t buflen = strlen(errbuf);
-         fprintf(stderr, "\nlibcurl: (%d) ", res);
-         if (buflen) {
-             fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-         } else {
-             fprintf(stderr, "%s\n", curl_easy_strerror(res));
-         }
-         check_result_text = copyString("curl access to the Tiki site for web page date-time check failed - see error log for more detail");
+    char errbuf[CURL_ERROR_SIZE];
+    struct curl_slist *headchunk = build_json_auth_headers(access_token, false, false);
+    check_result_text = perform_memory_request(debug, API_URL, headchunk, NULL, -1, &memchunk, errbuf);
+    curl_slist_free_all(headchunk);
+    if (check_result_text != NULL && strstr(check_result_text, "curl request") != NULL) {
+         /* request error already represented */
     } else if (memchunk.size == 0) {
          printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         // check if perhaps? there is something in the errbuf even though CURLE_OK was received and it is NOT the 'libcurl: (0)' text //
-         size_t buflen = strlen(errbuf);
-         if (buflen) {
-		     errresp = strstr(errbuf, "0");
-			 if ( errresp == NULL )  {  // "0" string not found so populate stderr log!
-                 fprintf(stderr, "\nlibcurl: (%d) ", res);
-			     fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-				 check_result_text = copyString("empty response from the curl request sent to the server API - see error log for more detail");
-			 }
-         } else {
-		     check_result_text = copyString("empty response from the curl request sent to the server API - you should check if the request has been processed");
-		 }
+         check_result_text = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
     } else {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
@@ -620,11 +648,7 @@ char* webpage_datetimecheck(int debug, const char* domain, const char* page, cha
          }
     }
  
-    /* cleanup curl stuff */
-    curl_easy_cleanup(curl_handle);
     free(memchunk.memory);
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
     if (debug==1)
     {
         printf ("\ncurl_handle cleaned up and memchunk.memory freed\n");
@@ -681,90 +705,30 @@ char* tracker_itempost(int debug, const char* domain, char* access_token, const 
     // post_data: is a string containing the field data details of the new tracker item e.g
     // returnstr is returned as a string to indicate the result and is the itemId of the new tracker item or an error message
 
-    char errbuf[CURL_ERROR_SIZE];
-    char *errresp = "";    
     char *itemId = "";
     char *returnstr = "";
     // build the full tracker API URL
-	char API_URL[100] = "";
-    strcat(API_URL, domain);
-    strcat(API_URL, "/api/trackers/");
-    strcat(API_URL, trackerId);
-    strcat(API_URL, "/items");
+	char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/trackers/") != 0 ||
+        snprintf(API_URL + strlen(API_URL), sizeof(API_URL) - strlen(API_URL), "%s/items", trackerId) >= (int)(sizeof(API_URL) - strlen(API_URL))) {
+        return safe_copy_string("API URL was too long");
+    }
 	if (debug==1)
     {
        printf ("\n *** debug from tracker_itempost ...\n");
        printf ("API URL is: %s\n", API_URL);
 	}	
 
-    // POST to the tracker
     struct MemoryStruct memchunk;
-    memchunk.memory = malloc(1);  /* will be grown as needed by the realloc above */
-    memchunk.size = 0;            /* no data at this point */
-
-    CURL *curl_handle;
-    CURLcode res;
-    curl_global_init(CURL_GLOBAL_ALL);
-    /* init the curl session */
-    curl_handle = curl_easy_init();
-    /* specify URL to get */
-    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
-    /* send all returned data to this function  */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-    /* we pass our 'memchunk' struct to the callback function */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&memchunk);
-    /* some servers do not like requests that are made without a user-agent field, so we provide one */
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
-
-    // set the custom headers 
-    struct curl_slist *headchunk = NULL;
-    // Add the accept header */
-    headchunk = curl_slist_append(headchunk, "accept: application/json");
-    // Add the Content-Type header */
-    headchunk = curl_slist_append(headchunk, "Content-Type: application/x-www-form-urlencoded");
-    // Add the authorization access token header */
-    headchunk = curl_slist_append(headchunk, access_token);
-    // set the headers   
-    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headchunk);
-
-    // set the post data
-    curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, post_data);
-    // if we do not provide POSTFIELDSIZE, libcurl will strlen() by itself 
-    curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, (long)strlen(post_data));
-
-    /* set the error buffer as empty before performing a request */
-    errbuf[0] = 0; 
-    /* post it! */
-    res = curl_easy_perform(curl_handle);
-    curl_slist_free_all(headchunk); /* free the list */
- 
-    /* check for different response conditions and print any errors */
-    if(res != CURLE_OK) {
-         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        /* add detailed error text to the stderr log */
-         size_t buflen = strlen(errbuf);
-         fprintf(stderr, "\nlibcurl: (%d) ", res);
-         if (buflen) {
-             fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-         } else {
-             fprintf(stderr, "%s\n", curl_easy_strerror(res));
-         }
-         returnstr = copyString("curl access to the Tiki site for tracker item post failed - see error log for more detail");
+    char errbuf[CURL_ERROR_SIZE];
+    struct curl_slist *headchunk = build_json_auth_headers(access_token, true, false);
+    returnstr = perform_memory_request(debug, API_URL, headchunk, post_data, (long)strlen(post_data), &memchunk, errbuf);
+    curl_slist_free_all(headchunk);
+    if (returnstr != NULL && strstr(returnstr, "curl request") != NULL) {
+         /* request error already represented */
     } else if (memchunk.size == 0) {
          printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         // check if perhaps? there is something in the errbuf even though CURLE_OK was received and it is NOT the 'libcurl: (0)' text //
-         size_t buflen = strlen(errbuf);
-         if (buflen) {
-		     errresp = strstr(errbuf, "0");
-			 if ( errresp == NULL )  {  // "0" string not found so populate stderr log!
-                 fprintf(stderr, "\nlibcurl: (%d) ", res);
-			     fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-				 returnstr = copyString("empty response from the curl request sent to the server API - see error log for more detail");
-			 }
-         } else {
-		     returnstr = copyString("empty response from the curl request sent to the server API - you should check if the request has been processed");
-		 }    
+         returnstr = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
     } else {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
@@ -810,11 +774,7 @@ char* tracker_itempost(int debug, const char* domain, char* access_token, const 
          }
     }
 
-    /* cleanup curl stuff */
-    curl_easy_cleanup(curl_handle);
     free(memchunk.memory);
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
 	if (debug==1)
     {
         printf ("return string is: %s\n", returnstr);
@@ -837,91 +797,29 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
     // post_data: is a string containing the updated field data details of the tracker item
     // returnstr is returned as a string to indicate the result and is all the field data in a dictionary-like format or an error message
 
-    char errbuf[CURL_ERROR_SIZE];
-    char *errresp = "";
     char *response = "";
     char *returnstr = "";
-    // build the full tracker API URL
-	char API_URL[100] = "";
-    strcat(API_URL, domain);
-    strcat(API_URL, "/api/trackers/");
-    strcat(API_URL, trackerId);
-    strcat(API_URL, "/items/");
-    strcat(API_URL, itemId);
+    char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/trackers/") != 0 ||
+        snprintf(API_URL + strlen(API_URL), sizeof(API_URL) - strlen(API_URL), "%s/items/%s", trackerId, itemId) >= (int)(sizeof(API_URL) - strlen(API_URL))) {
+        return safe_copy_string("API URL was too long");
+    }
 	if (debug==1)
     {
        printf ("\n *** debug from tracker_itemupdate ...\n");
        printf ("API URL is: %s\n", API_URL);
 	}	
 
-    // POST data to the tracker
     struct MemoryStruct memchunk;
-    memchunk.memory = malloc(1);  /* will be grown as needed by the realloc above */
-    memchunk.size = 0;            /* no data at this point */
-
-    CURL *curl_handle;
-    CURLcode res;
-    curl_global_init(CURL_GLOBAL_ALL);
-    /* init the curl session */
-    curl_handle = curl_easy_init();
-    /* specify URL to get */
-    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
-    /* send all returned data to this function  */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-    /* we pass our 'memchunk' struct to the callback function */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&memchunk);
-    /* some servers do not like requests that are made without a user-agent field, so we provide one */
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
-
-    // set the custom headers 
-    struct curl_slist *headchunk = NULL;
-    // Add the accept header */
-    headchunk = curl_slist_append(headchunk, "accept: application/json");
-    // Add the Content-Type header */
-    headchunk = curl_slist_append(headchunk, "Content-Type: application/x-www-form-urlencoded");
-    // Add the authorization access token header */
-    headchunk = curl_slist_append(headchunk, access_token);
-    // set the headers   
-    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headchunk);
-
-    // set the post data
-    curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, post_data);
-    // if we do not provide POSTFIELDSIZE, libcurl will strlen() by itself 
-    curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE, (long)strlen(post_data));
-
-    /* set the error buffer as empty before performing a request */
-    errbuf[0] = 0; 
-    /* post it! */
-    res = curl_easy_perform(curl_handle);
-    curl_slist_free_all(headchunk); /* free the list */
- 
-    /* check for different response conditions and print any errors */
-    if(res != CURLE_OK) {
-         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        /* add detailed error text to the stderr log */
-         size_t buflen = strlen(errbuf);
-         fprintf(stderr, "\nlibcurl: (%d) ", res);
-         if (buflen) {
-             fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-         } else {
-             fprintf(stderr, "%s\n", curl_easy_strerror(res));
-         }
-         returnstr = copyString("curl access to the Tiki site for tracker item update failed - see error log for more detail");
+    char errbuf[CURL_ERROR_SIZE];
+    struct curl_slist *headchunk = build_json_auth_headers(access_token, true, false);
+    returnstr = perform_memory_request(debug, API_URL, headchunk, post_data, (long)strlen(post_data), &memchunk, errbuf);
+    curl_slist_free_all(headchunk);
+    if (returnstr != NULL && strstr(returnstr, "curl request") != NULL) {
+        /* request error already represented */
     } else if (memchunk.size == 0) {
          printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         // check if perhaps? there is something in the errbuf even though CURLE_OK was received and it is NOT the 'libcurl: (0)' text //
-         size_t buflen = strlen(errbuf);
-         if (buflen) {
-		     errresp = strstr(errbuf, "0");
-			 if ( errresp == NULL )  {  // "0" string not found so populate stderr log!
-                 fprintf(stderr, "\nlibcurl: (%d) ", res);
-			     fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-				 returnstr = copyString("empty response from the curl request sent to the server API - see error log for more detail");
-			 }
-         } else {
-		     returnstr = copyString("empty response from the curl request sent to the server API - you should check if the request has been processed");
-		 }
+         returnstr = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
     } else {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
@@ -1004,11 +902,7 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
          }
     }
 
-    /* cleanup curl stuff */
-    curl_easy_cleanup(curl_handle);
     free(memchunk.memory);
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
 
 	if (debug==1)
     {
@@ -1035,90 +929,30 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
     // itemId: is a string of the integer Id of the tracker item that is being downloaded
     // returnstr is returned as a string to indicate the result and is all the field data in a dictionary-like format or an error message
 
-    char errbuf[CURL_ERROR_SIZE];
-    char *errresp = "";
     char *response = "";
     char *returnstr = "";
     char* post_data = "";   // create an empty body so that POST is used
-    // build the full tracker API URL
-	char API_URL[100] = "";
-    strcat(API_URL, domain);
-    strcat(API_URL, "/api/trackers/");
-    strcat(API_URL, trackerId);
-    strcat(API_URL, "/items/");
-    strcat(API_URL, itemId);
+    char errbuf[CURL_ERROR_SIZE];
+    char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/trackers/") != 0 ||
+        snprintf(API_URL + strlen(API_URL), sizeof(API_URL) - strlen(API_URL), "%s/items/%s", trackerId, itemId) >= (int)(sizeof(API_URL) - strlen(API_URL))) {
+        return safe_copy_string("API URL was too long");
+    }
 	if (debug==1)
     {
        printf ("\n *** debug from tracker_itemget ...\n");
        printf ("API URL is: %s\n", API_URL);
 	}	
 
-    // send data to the tracker API
     struct MemoryStruct memchunk;
-    memchunk.memory = malloc(1);  /* will be grown as needed by the realloc above */
-    memchunk.size = 0;            /* no data at this point */
-
-    CURL *curl_handle;
-    CURLcode res;
-    curl_global_init(CURL_GLOBAL_ALL);
-    /* init the curl session */
-    curl_handle = curl_easy_init();
-    /* specify URL to get */
-    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
-    /* send all returned data to this function  */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-    /* we pass our 'memchunk' struct to the callback function */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&memchunk);
-    /* some servers do not like requests that are made without a user-agent field, so we provide one */
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
-
-    // set the custom headers - just needs the 'accept' and the access token
-    struct curl_slist *headchunk = NULL;
-    // Add the Content-Type header */
-    headchunk = curl_slist_append(headchunk, "Content-Type: application/x-www-form-urlencoded");
-    // Add the accept header */
-    headchunk = curl_slist_append(headchunk, "accept: application/json");
-    // Add the authorization access token header */
-    headchunk = curl_slist_append(headchunk, access_token);
-    // set the headers   
-    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headchunk);
-
-    // set the 'empty' post_data
-    curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, post_data);
-
-    /* set the error buffer as empty before performing a request */
-    errbuf[0] = 0; 
-    /* send it! */
-    res = curl_easy_perform(curl_handle);
-    curl_slist_free_all(headchunk); /* free the list */
- 
-    /* check for different response conditions and print any errors */
-    if(res != CURLE_OK) {
-         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        /* add detailed error text to the stderr log */
-         size_t buflen = strlen(errbuf);
-         fprintf(stderr, "\nlibcurl: (%d) ", res);
-         if (buflen) {
-             fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-         } else {
-             fprintf(stderr, "%s\n", curl_easy_strerror(res));
-         }
-         returnstr = copyString("curl access to the Tiki site for tracker item download failed - see error log for more detail");
+    struct curl_slist *headchunk = build_json_auth_headers(access_token, true, false);
+    returnstr = perform_memory_request(debug, API_URL, headchunk, post_data, 0, &memchunk, errbuf);
+    curl_slist_free_all(headchunk);
+    if (returnstr != NULL && strstr(returnstr, "curl request") != NULL) {
+         /* request error already represented */
     } else if (memchunk.size == 0) {
          printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         // check if perhaps? there is something in the errbuf even though CURLE_OK was received and it is NOT the 'libcurl: (0)' text //
-         size_t buflen = strlen(errbuf);
-         if (buflen) {
-		     errresp = strstr(errbuf, "0");
-			 if ( errresp == NULL )  {  // "0" string not found so populate stderr log!
-                 fprintf(stderr, "\nlibcurl: (%d) ", res);
-			     fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-				 returnstr = copyString("empty response from the curl request sent to the server API - see error log for more detail");
-			 }
-         } else {
-		     returnstr = copyString("empty response from the curl request sent to the server API - you should check if the request has been processed");
-		 }
+         returnstr = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
     } else {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
@@ -1143,7 +977,7 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
              // now look for the start of the 'fields' text
              response = strstr(memchunk.memory, "fields");        // response should now be the whole string from "fields" onwards
 	         if (debug==1) {
-                 printf ("Success! Length of fields response string is now: %ld\n", strlen(response) );
+             printf ("Success! Length of fields response string is now: %ld\n", strlen(response) );
              }
 
              if ( response != NULL )  {  // "fields" string found!
@@ -1190,9 +1024,8 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
          } else {
              printf ("\n*** Success text not found in response!! ***");
              printf ("\n\n");
-	         if (debug==1)
              returnstr = copyString("Success text not found");
-             {
+             if (debug==1) {
                  printf ("full original web page text is: %s\n", memchunk.memory);
                  printf ("returnstr set to              : %s\n", returnstr);
              }
@@ -1200,11 +1033,7 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
          }
     }
 
-    /* cleanup curl stuff */
-    curl_easy_cleanup(curl_handle);
     free(memchunk.memory);
-    /* we are done with libcurl, so clean it up */
-    curl_global_cleanup();
 	if (debug==1)
     {
         printf ("return string is: %s\n", returnstr);
@@ -1244,30 +1073,36 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
     char *response = "";
     char *returnstr = "";
 
-    // build the full file gallery API URL
-	char API_URL[100] = "";
-    strcat(API_URL, domain);
-    strcat(API_URL, "/api/galleries/");
-    strcat(API_URL, fileId);
-    strcat(API_URL, "/download");
+    char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/galleries/") != 0 ||
+        snprintf(API_URL + strlen(API_URL), sizeof(API_URL) - strlen(API_URL), "%s/download", fileId) >= (int)(sizeof(API_URL) - strlen(API_URL))) {
+        return safe_copy_string("API URL was too long");
+    }
 
     // build the stored file paths + names
-    char download[100] = "";
-    strcat(download, filespath);
+    char download[256] = "";
+    if (snprintf(download, sizeof(download), "%s", filespath) >= (int)sizeof(download)) {
+        return safe_copy_string("download path was too long");
+    }
     if (strlen(bodyfilename) == 0) {
-        strcat(download, "tempdownload");
+        if (snprintf(download + strlen(download), sizeof(download) - strlen(download), "%s", "tempdownload") >= (int)(sizeof(download) - strlen(download))) {
+            return safe_copy_string("download path was too long");
+        }
         if (debug==1) { 
             printf ("temporary download file name being used before renaming: tempdownload\n");
         }
     } else {
-        strcat(download, bodyfilename);
+        if (snprintf(download + strlen(download), sizeof(download) - strlen(download), "%s", bodyfilename) >= (int)(sizeof(download) - strlen(download))) {
+            return safe_copy_string("download path was too long");
+        }
         if (debug==1) { 
             printf ("dictated download file name being used: %s\n", bodyfilename);
         }
     }
-    char respheaders[100] = "";
-    strcat(respheaders, filespath);
-    strcat(respheaders, headerfilename);
+    char respheaders[256] = "";
+    if (snprintf(respheaders, sizeof(respheaders), "%s%s", filespath, headerfilename) >= (int)sizeof(respheaders)) {
+        return safe_copy_string("response header path was too long");
+    }
 
 	if (debug==1)
     {
@@ -1278,28 +1113,10 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
 
     // send data to the file gallery API
 
-    CURL *curl_handle;
-    CURLcode res;
-    curl_global_init(CURL_GLOBAL_ALL);
-    /* init the curl session */
-    curl_handle = curl_easy_init();
-
-    /* specify URL to get */
-    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
-
-    /* no progress meter ! */
-    curl_easy_setopt(curl_handle, CURLOPT_NOPROGRESS, 1L);
-
-    /* send all returned data to this function  */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, write_data);
-    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
-
     /* open the header file */
     FILE *headerfile;
     headerfile = fopen(respheaders, "w");
     if(!headerfile) {     // if the file cannot be opened abort everything
-        curl_easy_cleanup(curl_handle);
-        curl_global_cleanup();
         returnstr = copyString("response header file location could not be opened");
         return returnstr;
     }
@@ -1308,38 +1125,40 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
     FILE *bodyfile;
     bodyfile = fopen(download, "wb");  // use wb to allow binary
     if(!bodyfile) {    // if the file cannot be opened so abort everything
-        curl_easy_cleanup(curl_handle);
-        curl_global_cleanup();
         fclose(headerfile);
         returnstr = copyString("download file location could not be opened");
         return returnstr;
     }
 
-    /* we want the headers be written to this file handle */
+    CURL *curl_handle;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_ALL);
+    curl_handle = curl_easy_init();
+    if (curl_handle == NULL) {
+        fclose(headerfile);
+        fclose(bodyfile);
+        curl_global_cleanup();
+        return copyString("curl_easy_init failed");
+    }
+
+    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
+    curl_easy_setopt(curl_handle, CURLOPT_NOPROGRESS, 1L);
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, write_data);
     curl_easy_setopt(curl_handle, CURLOPT_HEADERDATA, headerfile);
- 
-    /* we want the body be written to this file handle instead of stdout */
     curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, bodyfile);
-
-    /* some servers do not like requests that are made without a user-agent field, so we provide one */
     curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
+    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
 
-    // set the custom request headers - just needs the 'accept' and the access token
     struct curl_slist *headchunk = NULL;
-    // Add the Content-Type header */
     headchunk = curl_slist_append(headchunk, "Content-Type: application/x-www-form-urlencoded");
-    // Add the accept header */
     headchunk = curl_slist_append(headchunk, "accept: application/json");
-    // Add the authorization access token header */
     headchunk = curl_slist_append(headchunk, access_token);
-    // set the headers   
     curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headchunk);
 
-    /* set the error buffer as empty before performing a request */
-    errbuf[0] = 0; 
-    /* get it! */
+    errbuf[0] = 0;
     res = curl_easy_perform(curl_handle);
-    curl_slist_free_all(headchunk); /* free the list */
+    curl_slist_free_all(headchunk);
+
     /* close the header file */
     fclose(headerfile);
     /* close the body file */
@@ -1348,19 +1167,16 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
     {
         printf ("header and body files written and closed\n");
     }
- 
-    /* check for different response conditions and print any errors */
-    if(res != CURLE_OK) {
-         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        /* add detailed error text to the stderr log */
-         size_t buflen = strlen(errbuf);
-         fprintf(stderr, "\nlibcurl: (%d) ", res);
-         if (buflen) {
-             fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-         } else {
-             fprintf(stderr, "%s\n", curl_easy_strerror(res));
-         }
-         returnstr = copyString("curl access to the Tiki site for File gallery file download failed - see error log for more detail");
+    if (res != CURLE_OK) {
+        fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        size_t buflen = strlen(errbuf);
+        fprintf(stderr, "\nlibcurl: (%d) ", res);
+        if (buflen) {
+            fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
+        } else {
+            fprintf(stderr, "%s\n", curl_easy_strerror(res));
+        }
+        returnstr = copyString("curl access to the Tiki site for File gallery file download failed - see error log for more detail");
     } else {
         /*
         * Now, check both the header and body files are OK and 
@@ -1374,8 +1190,6 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
 	        if (debug==1) { 
                 printf("header file size is zero - aborting operation\n");
             }
-            curl_easy_cleanup(curl_handle);
-            curl_global_cleanup();
             return returnstr;
         }
 
@@ -1390,8 +1204,6 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
 	        if (debug==1) { 
                 printf("body file size is zero or some other error - aborting operation\n");
             }
-            curl_easy_cleanup(curl_handle);
-            curl_global_cleanup();
             return returnstr;
         } else if (bodysize < 80) {
             returnstr = copyString("body file size is unusually small - fileId may not have been found");
@@ -1399,8 +1211,6 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
                 printf("body file size: %ld\n", bodysize);
                 printf("body file size is unusually small which suggests the fileId has not been found - aborting operation\n");
             }
-            curl_easy_cleanup(curl_handle);
-            curl_global_cleanup();
             return returnstr;
         }
 
@@ -1415,16 +1225,13 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
 
             // first reopen the header file for read only
             headerfile = fopen(respheaders, "r");
-            if(!headerfile) {     // if the file cannot be opened abort the renaming
+                if(!headerfile) {     // if the file cannot be opened abort the renaming
 	            if (debug==1)
                 {
                     printf ("couldn't reopen the response header file\n");
                 }
 
-                returnstr = copyString(download);
-                strcat(returnstr, " downloaded as header file could not be reopened");
-                curl_easy_cleanup(curl_handle);
-                curl_global_cleanup();
+                returnstr = safe_append_suffix(download, " downloaded as header file could not be reopened");
                 return returnstr;
                
             } else {
@@ -1446,10 +1253,6 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
                         {
                             printf ("HTTP/2 404 - found in the headerfile, so an error has occurred\n");
                         }
-                        /* cleanup curl stuff */
-                        curl_easy_cleanup(curl_handle);
-                        /* we are done with libcurl, so clean it up */
-                        curl_global_cleanup();
                         returnstr = copyString("HTTP/2 404 - found in the headerfile so the fileId was probably not found");
                         if (debug==1)
                         {
@@ -1514,20 +1317,16 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
                 {
                     printf ("download file renamed\n");
                 }
-                returnstr = copyString(newdownload);
-                strcat(returnstr, " downloaded OK");
+                returnstr = safe_append_suffix(newdownload, " downloaded OK");
             }
         } else {
-            returnstr = copyString(download);
-            strcat(returnstr, " downloaded OK");
+            returnstr = safe_append_suffix(download, " downloaded OK");
         }
-
     }
 
-    /* cleanup curl stuff */
     curl_easy_cleanup(curl_handle);
-    /* we are done with libcurl, so clean it up */
     curl_global_cleanup();
+
 	if (debug==1)
     {
         printf ("return string is: %s\n", returnstr);
@@ -1559,14 +1358,13 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
         printf ("***************************************\n\n");
     }
 
-    char errbuf[CURL_ERROR_SIZE];
     char *errresp = "";
     char *response = "";
     char *returnstr = "";
-    // build the full File gallery API URL
-	char API_URL[100] = "";
-    strcat(API_URL, domain);
-    strcat(API_URL, "/api/galleries/upload");
+    char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/galleries/upload") != 0) {
+        return safe_copy_string("API URL was too long");
+    }
 
 	if (debug==1)
     {
@@ -1581,24 +1379,19 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
     // send data to the galleries file upload API
 
     // memory used to store the response text
+    char errbuf[CURL_ERROR_SIZE];
     struct MemoryStruct memchunk;
-    memchunk.memory = malloc(1);  /* will be grown as needed by the realloc above */
-    memchunk.size = 0;            /* no data at this point */
-
     CURL *curl_handle;
     CURLcode res;
     curl_mime *form = NULL;
     curl_mimepart *field = NULL;
-
-    curl_global_init(CURL_GLOBAL_ALL);
-
-    /* init the curl session */
-    curl_handle = curl_easy_init();
+    if (setup_multipart_curl(&curl_handle, &memchunk, errbuf, API_URL) != 0) {
+        return copyString("curl_easy_init failed");
+    }
 
     /* Create the virtual multi part form */
     form = curl_mime_init(curl_handle);
 
-    /* Fill in the file upload field */
     field = curl_mime_addpart(form);
     curl_mime_name(field, "data");
     curl_mime_filedata(field, filepath);
@@ -1619,20 +1412,6 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
     curl_mime_name(field, "description");
     curl_mime_data(field, filedesc, CURL_ZERO_TERMINATED);
 
-    /* specify URL to POST to */
-    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
-
-    /* send all returned data to this function  */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-
-    /* we pass our 'memchunk' struct to the callback function */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&memchunk);
-
-    /* some servers do not like requests that are made without a user-agent field, so we provide one */
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-
-    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
-
     // set the custom headers - just needs the 'accept' and the access token
     struct curl_slist *headchunk = NULL;
     // Add the Content-Type header */
@@ -1644,39 +1423,12 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
 
     curl_easy_setopt(curl_handle, CURLOPT_MIMEPOST, form);
 
-    /* set the error buffer as empty before performing a request */
-    errbuf[0] = 0; 
     /* POST it! */
     res = curl_easy_perform(curl_handle);
     curl_slist_free_all(headchunk); /* free the list */
  
-    /* check for different response conditions and print any errors */
-    if(res != CURLE_OK) {
-         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        /* add detailed error text to the stderr log */
-         size_t buflen = strlen(errbuf);
-         fprintf(stderr, "\nlibcurl: (%d) ", res);
-         if (buflen) {
-             fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-         } else {
-             fprintf(stderr, "%s\n", curl_easy_strerror(res));
-         }
-         returnstr = copyString("curl access to the Tiki site for File gallery file upload failed - see error log for more detail");
-    } else if (memchunk.size == 0) {
-         printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         // check if perhaps? there is something in the errbuf even though CURLE_OK was received and it is NOT the 'libcurl: (0)' text //
-         size_t buflen = strlen(errbuf);
-         if (buflen) {
-		     errresp = strstr(errbuf, "0");
-			 if ( errresp == NULL )  {  // "0" string not found so populate stderr log!
-                 fprintf(stderr, "\nlibcurl: (%d) ", res);
-			     fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-				 returnstr = copyString("empty response from the curl request sent to the server API - see error log for more detail");
-			 }
-         } else {
-		     returnstr = copyString("empty response from the curl request sent to the server API - you should check if the request has been processed");
-		 }
-    } else {
+    returnstr = handle_curl_result(debug, res, errbuf, &memchunk, "curl access to the Tiki site for File gallery file upload failed - see error log for more detail");
+    if (returnstr == NULL) {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
          * bytes big and contains the returned text from the API.
@@ -1797,15 +1549,13 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
 
     char errbuf[CURL_ERROR_SIZE];
     char *response = "";
-    char *errresp = "";
     char *syntaxresponse = "";
     char *returnstr = "";
-    // build the full File gallery API URL
-	char API_URL[100] = "";
-    strcat(API_URL, domain);
-    strcat(API_URL, "/api/galleries/files/");
-    strcat(API_URL, fileId);
-    strcat(API_URL, "/update");
+    char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/galleries/files/") != 0 ||
+        snprintf(API_URL + strlen(API_URL), sizeof(API_URL) - strlen(API_URL), "%s/update", fileId) >= (int)(sizeof(API_URL) - strlen(API_URL))) {
+        return safe_copy_string("API URL was too long");
+    }
 
 	if (debug==1)
     {
@@ -1822,18 +1572,13 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
 
     // memory used to store the response text
     struct MemoryStruct memchunk;
-    memchunk.memory = malloc(1);  /* will be grown as needed by the realloc above */
-    memchunk.size = 0;            /* no data at this point */
-
     CURL *curl_handle;
     CURLcode res;
     curl_mime *form = NULL;
     curl_mimepart *field = NULL;
-
-    curl_global_init(CURL_GLOBAL_ALL);
-
-    /* init the curl session */
-    curl_handle = curl_easy_init();
+    if (setup_multipart_curl(&curl_handle, &memchunk, errbuf, API_URL) != 0) {
+        return copyString("curl_easy_init failed");
+    }
 
     /* Create the virtual multi part form */
     form = curl_mime_init(curl_handle);
@@ -1896,21 +1641,6 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
         }
     }
 
-    /* specify URL to POST to */
-    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
-
-    /* send all returned data to this function  */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-
-    /* we pass our 'memchunk' struct to the callback function */
-    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&memchunk);
-
-    /* some servers do not like requests that are made without a user-agent field, so we provide one */
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-
-    /* set the CURLOPT_ERRORBUFFER option with the errbuf buffer previously declared*/
-    curl_easy_setopt(curl_handle, CURLOPT_ERRORBUFFER, errbuf);
-
     // set the custom headers - just needs the 'accept' and the access token
     struct curl_slist *headchunk = NULL;
     // Add the Content-Type header */
@@ -1922,40 +1652,13 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
 
     curl_easy_setopt(curl_handle, CURLOPT_MIMEPOST, form);
 
-    /* set the error buffer as empty before performing a request */
-    errbuf[0] = 0; 
     /* POST it! */
     res = curl_easy_perform(curl_handle);
     sleep(2); // pause for 2 seconds to give time for a response
     curl_slist_free_all(headchunk); /* free the list */
  
-    /* check for different response conditions and print any errors */
-    if(res != CURLE_OK) {
-         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        /* add detailed error text to the stderr log */
-         size_t buflen = strlen(errbuf);
-         fprintf(stderr, "\nlibcurl: (%d) ", res);
-         if (buflen) {
-             fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-         } else {
-             fprintf(stderr, "%s\n", curl_easy_strerror(res));
-         }
-         returnstr = copyString("curl access to the Tiki site for File gallery file update failed - see error log for more detail");
-    } else if (memchunk.size == 0) {
-         printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         // check if perhaps? there is something in the errbuf even though CURLE_OK was received and it is NOT the 'libcurl: (0)' text //
-         size_t buflen = strlen(errbuf);
-         if (buflen) {
-		     errresp = strstr(errbuf, "0");
-			 if ( errresp == NULL )  {  // "0" string not found so populate stderr log!
-                 fprintf(stderr, "\nlibcurl: (%d) ", res);
-			     fprintf(stderr, "%s%s", errbuf, ((errbuf[buflen - 1] != '\n') ? "\n" : ""));
-				 returnstr = copyString("empty response from the curl request sent to the server API - see error log for more detail");
-			 }
-         } else {
-		     returnstr = copyString("empty response from the curl request sent to the server API - you should check if the request has been processed");
-		 }
-    } else {
+    returnstr = handle_curl_result(debug, res, errbuf, &memchunk, "curl access to the Tiki site for File gallery file update failed - see error log for more detail");
+    if (returnstr == NULL) {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
          * bytes big and contains the returned text from the API, which what is returned
@@ -2000,8 +1703,12 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
                  syntaxresponse = strstr(memchunk.memory, "syntax");        // syntaxresponse should now be the whole string from the text "syntaxa" onwards
                  if ( syntaxresponse != NULL )  {  // "syntax" string found!
                     removeString(memchunk.memory, strlen(memchunk.memory)-strlen(syntaxresponse)-2, strlen(syntaxresponse)+2);
-                    strcat(memchunk.memory, "}");  // add back the closing curly bracket
-                    returnstr = copyString(memchunk.memory);
+                    char *trimmed = safe_append_suffix(memchunk.memory, "}");
+                    if (trimmed != NULL) {
+                        returnstr = trimmed;
+                    } else {
+                        returnstr = copyString(memchunk.memory);
+                    }
                     if (debug==1) { 
                      printf ("'syntax' text found in the response\n");
                      printf ("returnstr has been set to a truncated response\n");

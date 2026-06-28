@@ -12,10 +12,6 @@ char* webpage_check(int debug, const char* domain, const char* page, char* acces
 
 char* webpage_datetimecheck(int debug, const char* domain, const char* page, char* access_token, const char* infront_text, int datelen, const char* ref_datetime, const char* refdatetime_fmt, const char* checkeddatetime_fmt);
 
-static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp);
-
-static size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream);
-
 char* tracker_itempost(int debug, const char* domain, char* access_token, const char* trackerId, const char* post_data);
 
 char* tracker_itemupdate(int debug, const char* domain, char* access_token, const char* trackerId, const char* itemId, const char* post_data);
