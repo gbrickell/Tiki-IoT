@@ -23,3 +23,5 @@ char* gallery_filedownload(int debug, const char* domain, char* access_token, co
 char* gallery_fileupload(int debug, const char* domain, char* access_token, const char* filepath, const char* galId, const char* filename, const char* filetitle, const char* filedesc);
 
 char* gallery_fileupdate(int debug, const char* domain, char* access_token, const char* fileId, const char* filepath, const char* filename, const char* filetitle, const char* filedesc, const char* metadata);
+
+char* tracker_dump(int debug, const char* domain, char* access_token, const char* trackerId, char* filename, char* filepath, int echo);

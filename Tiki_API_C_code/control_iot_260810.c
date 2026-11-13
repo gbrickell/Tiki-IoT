@@ -11,7 +11,8 @@
 //  - add #include <unistd.h> // to use sleep() in various places
 //  - start using CURLOPT_ERRORBUFFER to collect more error data for failed curl request
 // further update release 250808 to refine and extend the use of CURLOPT_ERRORBUFFER and avoid logging the more generic 'libcurl: (0)' text (which means 'No error') in stderr
-// further update release 260620 to extensively refactor, creating several new/common functions
+// further update release 260701 to continue the multipart cleanup and polishing pass
+// further update release 260708 to add additional functions
 
 // *****************
 // *** IMPORTANT *** 
@@ -30,11 +31,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <curl/curl.h>
-#include "control_iot_260620.h"
+#include "control_iot_260810.h"
 
 int debug;
 
-char swver[8] = "260620";
+char swver[8] = "260810";
 
 struct MemoryStruct {
   char *memory;
@@ -48,7 +49,26 @@ static char* curl_error_message(CURLcode res, char errbuf[CURL_ERROR_SIZE], cons
 static char* perform_memory_request(int debug, const char *url, struct curl_slist *headers, const char *post_data, long post_fields_size, struct MemoryStruct *memchunk, char errbuf[CURL_ERROR_SIZE]);
 static int setup_multipart_curl(CURL **curl_handle, struct MemoryStruct *memchunk, char errbuf[CURL_ERROR_SIZE], const char *url);
 static char* handle_curl_result(int debug, CURLcode res, char errbuf[CURL_ERROR_SIZE], const struct MemoryStruct *memchunk, const char *error_message_prefix);
+static char* handle_memory_request_result(int debug, char *request_result, const struct MemoryStruct *memchunk, const char *empty_response_message);
 static char* extract_and_copy_between(char *text, const char *prefix, const char *suffix);
+static char* extract_response_fragment(char *text, const char *start_marker, int start_trim, const char *end_marker, int end_trim);
+static char* copy_response_before_marker(const char *text, const char *marker, int keep_trailer_chars);
+static int build_tracker_dump_path(char *buffer, size_t buffer_size, const char *filepath, const char *filename);
+static long int count_file_lines(const char *path);
+struct DumpWriteContext {
+    FILE *file;
+    int debug;
+    int echo;
+    int first_line_complete;
+    int first_line_flushed;
+    int first_line_has_error;
+    int linebuf_overflow;
+    int aborted;
+    char linebuf[16384];
+    size_t linebuf_len;
+    char errtext[8192];
+};
+static size_t write_dump_data(void *ptr, size_t size, size_t nmemb, void *stream);
 static size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp);
 static size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream);
 
@@ -221,6 +241,158 @@ static char* extract_and_copy_between(char *text, const char *prefix, const char
     return safe_copy_string(start);
 }
 
+static char* extract_response_fragment(char *text, const char *start_marker, int start_trim, const char *end_marker, int end_trim)
+{
+    char *start = strstr(text, start_marker);
+    if (start == NULL) {
+        return NULL;
+    }
+
+    start += strlen(start_marker);
+    if (start_trim > 0 && (size_t)start_trim < strlen(start)) {
+        start += start_trim;
+    }
+
+    if (end_marker != NULL) {
+        char *end = strstr(start, end_marker);
+        if (end != NULL) {
+            if (end_trim > 0 && (size_t)end_trim <= (size_t)(end - start)) {
+                end -= end_trim;
+            }
+            *end = '\0';
+        }
+    } else if (end_trim > 0) {
+        size_t len = strlen(start);
+        if ((size_t)end_trim <= len) {
+            start[len - (size_t)end_trim] = '\0';
+        }
+    }
+
+    return safe_copy_string(start);
+}
+
+static char* copy_response_before_marker(const char *text, const char *marker, int keep_trailer_chars)
+{
+    char *copy = safe_copy_string(text);
+    if (copy == NULL) {
+        return NULL;
+    }
+
+    if (marker != NULL) {
+        char *cut = strstr(copy, marker);
+        if (cut != NULL) {
+            if (keep_trailer_chars > 0 && (size_t)keep_trailer_chars <= (size_t)(cut - copy)) {
+                cut -= keep_trailer_chars;
+            }
+            *cut = '\0';
+        }
+    }
+
+    return copy;
+}
+
+static int build_tracker_dump_path(char *buffer, size_t buffer_size, const char *filepath, const char *filename)
+{
+    if (!buffer || !filepath || !filename) {
+        return -1;
+    }
+
+    if (snprintf(buffer, buffer_size, "%s%s", filepath, filename) >= (int)buffer_size) {
+        if (buffer_size > 0) {
+            buffer[0] = '\0';
+        }
+        return -1;
+    }
+
+    size_t len = strlen(buffer);
+    if (len < 4 || strcmp(buffer + len - 4, ".csv") != 0) {
+        if (snprintf(buffer + len, buffer_size - len, ".csv") >= (int)(buffer_size - len)) {
+            if (buffer_size > 0) {
+                buffer[0] = '\0';
+            }
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static long int count_file_lines(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    long int lines = 0;
+    int ch;
+    int saw_any = 0;
+    int last_was_newline = 0;
+    while ((ch = fgetc(fp)) != EOF) {
+        saw_any = 1;
+        if (ch == '\n') {
+            lines++;
+            last_was_newline = 1;
+        } else {
+            last_was_newline = 0;
+        }
+    }
+    fclose(fp);
+    if (saw_any && !last_was_newline) {
+        lines++;
+    }
+    return lines;
+}
+
+static size_t write_dump_data(void *ptr, size_t size, size_t nmemb, void *stream)
+{
+    struct DumpWriteContext *ctx = (struct DumpWriteContext *)stream;
+    size_t realsize = size * nmemb;
+    const char *data = (const char *)ptr;
+
+    if (ctx->aborted) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < realsize; ++i) {
+        char ch = data[i];
+        if (!ctx->first_line_complete) {
+            if (ctx->linebuf_len + 1 < sizeof(ctx->linebuf)) {
+                ctx->linebuf[ctx->linebuf_len++] = ch;
+                ctx->linebuf[ctx->linebuf_len] = '\0';
+            } else {
+                ctx->linebuf_overflow = 1;
+            }
+            if (ch == '\n') {
+                ctx->first_line_complete = 1;
+                ctx->first_line_has_error = (strstr(ctx->linebuf, "error") != NULL);
+                if (ctx->first_line_has_error) {
+                    snprintf(ctx->errtext, sizeof(ctx->errtext), "%s", ctx->linebuf);
+                }
+            }
+        } else {
+            if (!ctx->first_line_flushed) {
+                if (fwrite(ctx->linebuf, 1, ctx->linebuf_len, ctx->file) != ctx->linebuf_len) {
+                    ctx->aborted = 1;
+                    return 0;
+                }
+                if (ctx->debug == 1 || ctx->echo == 1) {
+                    fwrite(ctx->linebuf, 1, ctx->linebuf_len, stdout);
+                }
+                ctx->first_line_flushed = 1;
+            }
+            if (fwrite(&ch, 1, 1, ctx->file) != 1) {
+                ctx->aborted = 1;
+                return 0;
+            }
+            if (ctx->debug == 1 || ctx->echo == 1) {
+                fwrite(&ch, 1, 1, stdout);
+            }
+        }
+    }
+    return realsize;
+}
+
 static char* safe_append_suffix(const char *prefix, const char *suffix)
 {
     size_t plen = strlen(prefix);
@@ -294,6 +466,22 @@ static char* handle_curl_result(int debug, CURLcode res, char errbuf[CURL_ERROR_
     return NULL;
 }
 
+static char* handle_memory_request_result(int debug, char *request_result, const struct MemoryStruct *memchunk, const char *empty_response_message)
+{
+    if (request_result != NULL && request_result[0] != '\0') {
+        return request_result;
+    }
+
+    if (memchunk->size == 0) {
+        if (debug == 1) {
+            printf("the curl request may have been processed BUT there was an empty response from the server API\n");
+        }
+        return safe_copy_string(empty_response_message);
+    }
+
+    return NULL;
+}
+
 // ************************************************************
 // this simple 'connection' function included for test purposes
 // ************************************************************
@@ -343,10 +531,8 @@ char* webpage_download(int debug, const char* domain, const char* page, char* ac
     struct curl_slist *headchunk = build_json_auth_headers(access_token, false, false);
     returnstr = perform_memory_request(debug, API_URL, headchunk, NULL, -1, &memchunk, errbuf);
     curl_slist_free_all(headchunk);
-    if (returnstr == NULL && memchunk.size == 0) {
-         printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         returnstr = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
-    } else {
+    returnstr = handle_memory_request_result(debug, returnstr, &memchunk, "empty response from the curl request sent to the server API - you should check if the request has been processed");
+    if (returnstr == NULL) {
         /*
         * Now, our memchunk.memory points to a memory block that is memchunk.size
         * bytes big and contains the web page content.
@@ -422,12 +608,8 @@ char* webpage_check(int debug, const char* domain, const char* page, char* acces
     char errbuf[CURL_ERROR_SIZE];
     check_result = perform_memory_request(debug, API_URL, headchunk, NULL, -1, &memchunk, errbuf);
     curl_slist_free_all(headchunk);
-    if (check_result != NULL && strstr(check_result, "curl request") != NULL) {
-         /* request-level error already returned */
-    } else if (memchunk.size == 0) {
-         printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         check_result = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
-    } else {
+    check_result = handle_memory_request_result(debug, check_result, &memchunk, "empty response from the curl request sent to the server API - you should check if the request has been processed");
+    if (check_result == NULL) {
         /*
         * Now, our memchunk.memory points to a memory block that is memchunk.size
         * bytes big and contains the web page content.
@@ -551,12 +733,8 @@ char* webpage_datetimecheck(int debug, const char* domain, const char* page, cha
     struct curl_slist *headchunk = build_json_auth_headers(access_token, false, false);
     check_result_text = perform_memory_request(debug, API_URL, headchunk, NULL, -1, &memchunk, errbuf);
     curl_slist_free_all(headchunk);
-    if (check_result_text != NULL && strstr(check_result_text, "curl request") != NULL) {
-         /* request error already represented */
-    } else if (memchunk.size == 0) {
-         printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         check_result_text = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
-    } else {
+    check_result_text = handle_memory_request_result(debug, check_result_text, &memchunk, "empty response from the curl request sent to the server API - you should check if the request has been processed");
+    if (check_result_text == NULL) {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
          * bytes big and contains the web page content.
@@ -705,7 +883,6 @@ char* tracker_itempost(int debug, const char* domain, char* access_token, const 
     // post_data: is a string containing the field data details of the new tracker item e.g
     // returnstr is returned as a string to indicate the result and is the itemId of the new tracker item or an error message
 
-    char *itemId = "";
     char *returnstr = "";
     // build the full tracker API URL
 	char API_URL[256] = "";
@@ -724,12 +901,8 @@ char* tracker_itempost(int debug, const char* domain, char* access_token, const 
     struct curl_slist *headchunk = build_json_auth_headers(access_token, true, false);
     returnstr = perform_memory_request(debug, API_URL, headchunk, post_data, (long)strlen(post_data), &memchunk, errbuf);
     curl_slist_free_all(headchunk);
-    if (returnstr != NULL && strstr(returnstr, "curl request") != NULL) {
-         /* request error already represented */
-    } else if (memchunk.size == 0) {
-         printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         returnstr = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
-    } else {
+    returnstr = handle_memory_request_result(debug, returnstr, &memchunk, "empty response from the curl request sent to the server API - you should check if the request has been processed");
+    if (returnstr == NULL) {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
          * bytes big and contains the response text from the API.
@@ -741,27 +914,12 @@ char* tracker_itempost(int debug, const char* domain, char* access_token, const 
              printf("%lu bytes retrieved\n", (unsigned long)memchunk.size);
              printf("the full text response is: %s\n", memchunk.memory);
          }
-         itemId = strstr(memchunk.memory, "itemId");        // itemId should now be the whole string from the 'itemId' text onwards
-         if ( itemId != NULL )  {  // itemId string found!
-             // now strip away everything from a comma to the end of the string
-             char *ptr;
-             ptr = strchr(itemId, ',');
-             if (ptr != NULL) {
-                 *ptr = '\0';
-             }
+         returnstr = extract_response_fragment(memchunk.memory, "\"itemId\":", 0, ",", 0);
+         if (returnstr != NULL) {
 	         if (debug==1)
              {
-                 printf ("1st cropped found text is: %s\n", itemId);
+                 printf ("itemId extracted as: %s\n", returnstr);
              }
-
-             // the line of code below now removes the first 8 characters i.e. 'itemId":' leaving just the integer value
-             //  only 8 cahracters are removed because an itemId is always an integer so is never surrounded in quote characters
-             removeString(itemId, 0, 8);
-	         if (debug==1)
-             {
-                 printf ("2nd cropped found text is: %s\n", itemId);
-             }
-             returnstr = copyString(itemId);
          } else {
              returnstr = copyString("itemId text not found");
 	         if (debug==1)
@@ -797,7 +955,6 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
     // post_data: is a string containing the updated field data details of the tracker item
     // returnstr is returned as a string to indicate the result and is all the field data in a dictionary-like format or an error message
 
-    char *response = "";
     char *returnstr = "";
     char API_URL[256] = "";
     if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/trackers/") != 0 ||
@@ -815,12 +972,8 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
     struct curl_slist *headchunk = build_json_auth_headers(access_token, true, false);
     returnstr = perform_memory_request(debug, API_URL, headchunk, post_data, (long)strlen(post_data), &memchunk, errbuf);
     curl_slist_free_all(headchunk);
-    if (returnstr != NULL && strstr(returnstr, "curl request") != NULL) {
-        /* request error already represented */
-    } else if (memchunk.size == 0) {
-         printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         returnstr = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
-    } else {
+    returnstr = handle_memory_request_result(debug, returnstr, &memchunk, "empty response from the curl request sent to the server API - you should check if the request has been processed");
+    if (returnstr == NULL) {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
          * bytes big and contains the returned text from the API.
@@ -834,9 +987,9 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
          }
 
          // first of all check that the update went OK by looking for "Success" in memchunk
-         response = strstr(memchunk.memory, "Success");        // response should now be the whole string from "Success" onwards
+         char *response = strstr(memchunk.memory, "Success");        // response should now be the whole string from "Success" onwards
          if (debug==1) {
-             printf ("check made for the Success text string" );
+             printf ("check made for the Success text string\n" );
          }
 
          if ( response != NULL )  {  // "Success" string found!
@@ -844,39 +997,10 @@ char* tracker_itemupdate(int debug, const char* domain, char* access_token, cons
                  printf ("length of Success response string is: %ld\n", strlen(response) );
              }
 
-             // now look for the start of the 'mes' text
-             response = strstr(memchunk.memory, "mes");        // response should now be the whole string from "mes" onwards
+             returnstr = extract_response_fragment(memchunk.memory, "\"mes\":[", 0, "]", 1);
+             if (returnstr != NULL) {
 	         if (debug==1) {
-                 printf ("length of mes response string is: %ld\n", strlen(response) );
-             }
-
-             if ( response != NULL )  {  // "mes" string found!
-
-                 removeString(response, 0, 7);     // strip away the first 7 front end characters for just the text and everything after
-	             if (debug==1)
-                 {
-                     printf ("1st cropped found text is: %s\n", response);
-                     printf ("length of new mes response string is: %ld\n", strlen(response) );
-                 }
-                 // now strip away everything from the first ] character found
-                 char *ptr;
-                 ptr = strchr(response, ']');    // ptr is the pointer for the ] in 'response'
-                 if (ptr != NULL) {
-                     *ptr = '\0';   // this makes the original ] character the 'end of string' character
-                 }
-	             if (debug==1)
-                 {
-                     printf ("2nd cropped found text is: %s\n", response);
-                     printf ("length of next new mes response string is: %ld\n", strlen(response) );
-                 }
-                 // now remove the final " character to leave just the message text 
-                 removeString(response, strlen(response)-1, 1);    
-                 returnstr = copyString(response);
-	             if (debug==1)
-                 {
-                     printf ("3rd cropped found text is: %s\n", response);
-                     printf ("length of final new mes response string is: %ld\n", strlen(response) );
-                     printf ("returnstr set to         : %s\n", returnstr);
+                     printf ("mes extracted as: %s\n", returnstr);
                  }
 
              } else {
@@ -929,7 +1053,6 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
     // itemId: is a string of the integer Id of the tracker item that is being downloaded
     // returnstr is returned as a string to indicate the result and is all the field data in a dictionary-like format or an error message
 
-    char *response = "";
     char *returnstr = "";
     char* post_data = "";   // create an empty body so that POST is used
     char errbuf[CURL_ERROR_SIZE];
@@ -948,12 +1071,8 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
     struct curl_slist *headchunk = build_json_auth_headers(access_token, true, false);
     returnstr = perform_memory_request(debug, API_URL, headchunk, post_data, 0, &memchunk, errbuf);
     curl_slist_free_all(headchunk);
-    if (returnstr != NULL && strstr(returnstr, "curl request") != NULL) {
-         /* request error already represented */
-    } else if (memchunk.size == 0) {
-         printf("the curl request may have been processed BUT there was an empty response from the server API\n");
-         returnstr = safe_copy_string("empty response from the curl request sent to the server API - you should check if the request has been processed");
-    } else {
+    returnstr = handle_memory_request_result(debug, returnstr, &memchunk, "empty response from the curl request sent to the server API - you should check if the request has been processed");
+    if (returnstr == NULL) {
          /*
          * Now, our memchunk.memory points to a memory block that is memchunk.size
          * bytes big and contains the returned text from the API.
@@ -967,47 +1086,18 @@ char* tracker_itemget(int debug, const char* domain, char* access_token, const c
          }
 
          // first of all check that the update went OK by looking for "Success" in memchunk
-         response = strstr(memchunk.memory, "Success");        // response should now be the whole string from "Success" onwards
+         char *response = strstr(memchunk.memory, "Success");        // response should now be the whole string from "Success" onwards
 
          if ( response != NULL )  {  // "Success" string found!
 
 	         if (debug==1) {
                  printf ("length of Success response string is: %ld\n", strlen(response) );
              }
-             // now look for the start of the 'fields' text
-             response = strstr(memchunk.memory, "fields");        // response should now be the whole string from "fields" onwards
+             returnstr = extract_response_fragment(memchunk.memory, "\"fields\":", 0, "nextTicket", 2);
+             if (returnstr != NULL) {
 	         if (debug==1) {
-             printf ("Success! Length of fields response string is now: %ld\n", strlen(response) );
+                 printf ("fields extracted as: %s\n", returnstr);
              }
-
-             if ( response != NULL )  {  // "fields" string found!
-
-                 removeString(response, 0, 8);     // strip away the first 8 front end characters for just the fields text and everything after
-	             if (debug==1)
-                 {
-                     printf ("1st cropped found text is: %s\n", response);
-                     printf ("length of new fields response string is: %ld\n", strlen(response) );
-                 }
-                 // now strip away everything at the end from 'nextTicket' onwards
-                 char *ptr;
-                 ptr = strstr(response, "nextTicket");    // ptr is the pointer for nextTicket in 'response'
-                 if (ptr != NULL) {
-                     *ptr = '\0';   // this makes the original ] character the 'end of string' character
-                 }
-	             if (debug==1)
-                 {
-                     printf ("2nd cropped fields text is: %s\n", response);
-                     printf ("length of next new fields response string is: %ld\n", strlen(response) );
-                 }
-                 // now remove the final " character to leave just the fields text 
-                 removeString(response, strlen(response)-2,2);    
-                 returnstr = copyString(response);
-	             if (debug==1)
-                 {
-                     printf ("3rd cropped found text is: %s\n", response);
-                     printf ("length of final new fields response string is: %ld\n", strlen(response) );
-                     printf ("returnstr set to         : %s\n", returnstr);
-                 }
 
              } else {
                  printf ("\n*** fields text not found in response!! ***");
@@ -1457,40 +1547,11 @@ char* gallery_fileupload(int debug, const char* domain, char* access_token, cons
          }
 
          // now check that the upload went OK by looking for "fileId" in memchunk
-         response = strstr(memchunk.memory, "fileId");        // response should now be the whole string from "fileId" onwards
-
-         if ( response != NULL )  {  // "fileId" string found!
-	         if (debug==1) {
-                 printf ("fileId found! Length of response string is now: %ld\n", strlen(response) );
-             }
-
-             removeString(response, 0, 9);     // strip away the first 9 front end characters for just the fileId number and everything after
+         returnstr = extract_response_fragment(memchunk.memory, "\"fileId\":", 0, "\"galleryId\"", 3);
+         if (returnstr != NULL )  {
 	         if (debug==1)
              {
-                 printf ("1st cropped found text is: %s\n", response);
-                 printf ("length of new response string is: %ld\n", strlen(response) );
-             }
-
-             // now strip away everything at the end from 'galleryId' onwards
-             char *ptr;
-             ptr = strstr(response, "galleryId");    // ptr is the pointer for galleryId in 'response'
-             if (ptr != NULL) {
-                 *ptr = '\0';   // this makes the original ] character the 'end of string' character
-             }
-	         if (debug==1)
-             {
-                 printf ("2nd cropped response text is: %s\n", response);
-                 printf ("length of next new response string is: %ld\n", strlen(response) );
-             }
-
-             // now remove the final "," characters to leave just the fileId number 
-             removeString(response, strlen(response)-3,3);    
-             returnstr = copyString(response);
-	         if (debug==1)
-             {
-                 printf ("3rd cropped response is: %s\n", response);
-                 printf ("length of final response string is: %ld\n", strlen(response) );
-                 printf ("returnstr set to         : %s\n", returnstr);
+                 printf ("fileId extracted as: %s\n", returnstr);
              }
 
          } else {
@@ -1549,7 +1610,6 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
 
     char errbuf[CURL_ERROR_SIZE];
     char *response = "";
-    char *syntaxresponse = "";
     char *returnstr = "";
     char API_URL[256] = "";
     if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/galleries/files/") != 0 ||
@@ -1689,7 +1749,7 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
          if ( response != NULL )  {  // "fileId" string found! so we did a successful update
 	         if (debug==1) {
                  printf ("fileId found! So update was successful\n");
-                 printf ("string length from fileId onwards is: %s\n", response);
+                 printf ("string length from fileId onwards is: %ld\n", strlen(response) );
              }
 
             if (strcmp (metadata, "yes") == 0) {  
@@ -1699,15 +1759,19 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
                      printf ("returnstr set to memchunk.memory\n");
                  }
             } else {
-                 // need to exclude the syntax and metadata so find the position of 'syntax' in the full response text
-                 syntaxresponse = strstr(memchunk.memory, "syntax");        // syntaxresponse should now be the whole string from the text "syntaxa" onwards
-                 if ( syntaxresponse != NULL )  {  // "syntax" string found!
-                    removeString(memchunk.memory, strlen(memchunk.memory)-strlen(syntaxresponse)-2, strlen(syntaxresponse)+2);
-                    char *trimmed = safe_append_suffix(memchunk.memory, "}");
-                    if (trimmed != NULL) {
-                        returnstr = trimmed;
-                    } else {
-                        returnstr = copyString(memchunk.memory);
+                 returnstr = copy_response_before_marker(memchunk.memory, "\"syntax\"", 0);
+                 if (returnstr != NULL) {
+                    size_t len = strlen(returnstr);
+                    if (len > 0 && returnstr[len - 1] == ',') {
+                        returnstr[len - 1] = '\0';
+                        len--;
+                    }
+                    if (len > 0 && returnstr[len - 1] != '}') {
+                        char *trimmed = safe_append_suffix(returnstr, "}");
+                        if (trimmed != NULL) {
+                            free(returnstr);
+                            returnstr = trimmed;
+                        }
                     }
                     if (debug==1) { 
                      printf ("'syntax' text found in the response\n");
@@ -1720,7 +1784,6 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
                      printf ("returnstr set to the full response\n");
                     }
                  }
-
             }
 
          } else {
@@ -1749,4 +1812,187 @@ char* gallery_fileupdate(int debug, const char* domain, char* access_token, cons
 	return returnstr;
 
 }	
+
+
+// ********************************************************************************
+//  dump all the items from an existing tracker in CSV format and write to file
+// *******************************************************************************
+char* tracker_dump(int debug, const char* domain, char* access_token, const char* trackerId, char* filename, char* filepath, int echo)
+{
+    if (debug==1)
+    {
+        printf ("\n\n");
+        printf ("***************************************\n");
+        printf ("*** debug from tracker_dump ...\n");
+        printf ("***************************************\n\n");
+    }
+
+    if (domain == NULL || access_token == NULL || trackerId == NULL || filename == NULL || filepath == NULL) {
+        return safe_copy_string("invalid tracker_dump arguments");
+    }
+    if (strlen(filename) == 0) {
+        return safe_copy_string("filename must not be empty");
+    }
+    if (strlen(filepath) == 0) {
+        return safe_copy_string("filepath must not be empty");
+    }
+
+    char API_URL[256] = "";
+    if (build_api_url(API_URL, sizeof(API_URL), domain, "/api/trackers/") != 0 ||
+        snprintf(API_URL + strlen(API_URL), sizeof(API_URL) - strlen(API_URL), "%s/dump", trackerId) >= (int)(sizeof(API_URL) - strlen(API_URL))) {
+        return safe_copy_string("API URL was too long");
+    }
+
+    char output_path[512] = "";
+    if (build_tracker_dump_path(output_path, sizeof(output_path), filepath, filename) != 0) {
+        return safe_copy_string("dump output path was too long");
+    }
+
+    if (debug==1)
+    {
+        printf ("API URL is       : %s\n", API_URL);
+        printf ("dump filename is : %s\n", output_path);
+    }
+
+    char temp_output_path[512] = "";
+    if (snprintf(temp_output_path, sizeof(temp_output_path), "%s.tmp", output_path) >= (int)sizeof(temp_output_path)) {
+        return safe_copy_string("temporary dump output path was too long");
+    }
+
+    FILE *dumpfile = fopen(temp_output_path, "wb");
+    if (!dumpfile) {
+        return safe_copy_string("dump file location could not be opened");
+    }
+
+    CURL *curl_handle;
+    CURLcode res;
+    struct curl_slist *headchunk = NULL;
+    struct DumpWriteContext dumpctx;
+    char *returnstr = "";
+
+    curl_global_init(CURL_GLOBAL_ALL);
+    curl_handle = curl_easy_init();
+    if (curl_handle == NULL) {
+        fclose(dumpfile);
+        curl_global_cleanup();
+        return safe_copy_string("curl_easy_init failed");
+    }
+
+    headchunk = curl_slist_append(headchunk, "accept: text/csv");
+    headchunk = curl_slist_append(headchunk, access_token);
+
+    dumpctx.file = dumpfile;
+    dumpctx.debug = debug;
+    dumpctx.echo = echo;
+    dumpctx.first_line_complete = 0;
+    dumpctx.first_line_flushed = 0;
+    dumpctx.first_line_has_error = 0;
+    dumpctx.linebuf_overflow = 0;
+    dumpctx.aborted = 0;
+    dumpctx.linebuf_len = 0;
+    dumpctx.linebuf[0] = '\0';
+    dumpctx.errtext[0] = '\0';
+
+    curl_easy_setopt(curl_handle, CURLOPT_URL, API_URL);
+    curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headchunk);
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, write_dump_data);
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, &dumpctx);
+    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
+
+    res = curl_easy_perform(curl_handle);
+    curl_slist_free_all(headchunk);
+
+    if (res == CURLE_OK && !dumpctx.first_line_complete && dumpctx.linebuf_len > 0) {
+        if (strstr(dumpctx.linebuf, "error") != NULL) {
+            dumpctx.first_line_has_error = 1;
+            snprintf(dumpctx.errtext, sizeof(dumpctx.errtext), "%s", dumpctx.linebuf);
+            if (debug==1) {
+                printf("single-line error response detected\n");
+            }
+            if (dumpctx.debug == 1 || dumpctx.echo == 1) {
+                printf("%s\n", dumpctx.errtext);
+            }
+            dumpctx.aborted = 1;
+        }
+    }
+
+    if (dumpctx.linebuf_overflow && debug==1) {
+        printf("tracker dump first-line buffer overflowed while inspecting response header line\n");
+    }
+
+    if (res == CURLE_OK && dumpctx.first_line_complete && !dumpctx.first_line_flushed) {
+        if (dumpctx.first_line_has_error) {
+            if (debug==1) {
+                printf("single-line error response detected\n");
+            }
+            if (dumpctx.debug == 1 || dumpctx.echo == 1) {
+                fwrite(dumpctx.linebuf, 1, dumpctx.linebuf_len, stdout);
+                fwrite("\n", 1, 1, stdout);
+            }
+            dumpctx.aborted = 1;
+        } else {
+            if (fwrite(dumpctx.linebuf, 1, dumpctx.linebuf_len, dumpfile) != dumpctx.linebuf_len) {
+                dumpctx.aborted = 1;
+            } else if (debug==1 || echo==1) {
+                fwrite(dumpctx.linebuf, 1, dumpctx.linebuf_len, stdout);
+            }
+        }
+    }
+
+    if (res != CURLE_OK || dumpctx.aborted) {
+        fclose(dumpfile);
+        curl_easy_cleanup(curl_handle);
+        curl_global_cleanup();
+        remove(temp_output_path);
+        if (dumpctx.first_line_has_error && dumpctx.errtext[0] != '\0') {
+            returnstr = copyString(dumpctx.errtext);
+        } else {
+            returnstr = safe_copy_string("curl access to the Tiki site for tracker dump failed - see error log for more detail");
+            if (debug==1) {
+                fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+            }
+        }
+        return returnstr;
+    }
+
+    curl_easy_cleanup(curl_handle);
+    fclose(dumpfile);
+    curl_global_cleanup();
+
+    if (rename(temp_output_path, output_path) != 0) {
+        remove(temp_output_path);
+        return safe_copy_string("tracker dump file rename failed");
+    }
+
+    if (returnstr == NULL || returnstr[0] == '\0') {
+        long int dumpsize = findSize(output_path);
+        if (debug==1) {
+            printf("dump file size: %ld\n", dumpsize);
+        }
+        if (dumpsize <= 0) {
+            returnstr = safe_copy_string("tracker dump file size is zero or some other error");
+        } else if (dumpsize < 80) {
+            returnstr = safe_copy_string("tracker dump file size is unusually small - dump may not have completed");
+            if (debug==1) {
+                printf("tracker dump file size is unusually small - please check the file contents\n");
+            }
+        } else {
+            char success_message[768];
+            long int linecount = count_file_lines(output_path);
+            long int itemcount = (linecount > 0) ? (linecount - 1) : -1;
+            if (itemcount >= 0) {
+                snprintf(success_message, sizeof(success_message), "tracker dump written to %s containing %ld items", output_path, itemcount);
+            } else {
+                snprintf(success_message, sizeof(success_message), "tracker dump written to %s", output_path);
+            }
+            returnstr = safe_copy_string(success_message);
+        }
+    }
+
+    if (debug==1)
+    {
+        printf ("return string is: %s\n", returnstr);
+    }
+    return returnstr;
+}
 	
